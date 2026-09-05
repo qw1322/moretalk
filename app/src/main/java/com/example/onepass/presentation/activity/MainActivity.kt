@@ -945,11 +945,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 刷新顶部实时时间（含秒，每秒更新）
+     * 刷新顶部时间（不含秒；每秒触发一次，保证整分及时刷新）
      */
     private fun updateTimeText() {
         if (!::timeText.isInitialized) return
-        timeText.text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        timeText.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
     }
 
     private fun updateDate() {
