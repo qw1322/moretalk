@@ -162,13 +162,19 @@ class RemoteAssistService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // 看门狗：本 ROM 虚拟显示偶发停摆，停滞 700ms 即重建（恢复越快操作延迟越低）
+    // 看门狗：虚拟显示偶发停摆时重建。
+    // 停滞阈值 1500ms + 重建冷却 1500ms：兼容 realme（重建后约1s出帧）与一加/ColorOS
+    // （虚拟显示创建后出首帧可能较慢，若冷却太短会陷入"重建→未出帧→再重建"的风暴，永远无帧）。
     private val watchdogRunnable = object : Runnable {
+        private var lastRebuildAt = 0L
         override fun run() {
             if (running.get() && mediaProjection != null) {
-                val stall = System.currentTimeMillis() - lastFrameAt
-                if (stall > 700) {
+                val now = System.currentTimeMillis()
+                val stall = now - lastFrameAt
+                // 重建冷却：距上次重建不足 1500ms 不重建，给虚拟显示留出帧时间
+                if (stall > 1500 && now - lastRebuildAt > 1500) {
                     Logger.w(TAG, "采集停滞 ${stall}ms，重建虚拟显示")
+                    lastRebuildAt = now
                     runCatching { createCapture(captureWidth, captureHeight, captureDensity) }
                 }
             }

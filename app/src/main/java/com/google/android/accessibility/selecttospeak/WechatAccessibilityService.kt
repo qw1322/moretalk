@@ -43,6 +43,8 @@ class SelectToSpeakService : AccessibilityService() {
         private const val TAG = "WechatAccessibility"
         private const val MAX_RETRY_COUNT = 3
         private const val MAX_NAVIGATION_ATTEMPTS = 3
+        /** 微信冷启动开屏广告/启动页等待上限（10 次 × 800ms ≈ 8 秒） */
+        private const val MAX_LAUNCH_WAIT = 10
 
         @Volatile
         private var instance: SelectToSpeakService? = null
@@ -75,6 +77,10 @@ class SelectToSpeakService : AccessibilityService() {
     private var retryCount = 0
     private var navigationAttempts = 0
     private var lastWindowClassName = ""
+    /** 最近一次微信内事件源包名（仅记录微信界面事件） */
+    private var lastEventPackage = ""
+    /** 微信冷启动开屏广告/启动页等待计数 */
+    private var launchWaitCount = 0
 
     // 主动触发下一步的延迟任务
     private var nextStepRunnable: Runnable? = null
@@ -90,14 +96,23 @@ class SelectToSpeakService : AccessibilityService() {
             Log.d(TAG, "事件为空或className为null")
             return
         }
+        val eventPackage = event?.packageName?.toString() ?: ""
 
         // 跳过系统组件和无效事件
-        if (shouldSkipActivity(currentActivity)) {
-            Log.d(TAG, "跳过Activity: $currentActivity")
+        if (shouldSkipActivity(currentActivity, eventPackage)) {
+            Log.d(TAG, "跳过Activity: $currentActivity pkg=$eventPackage")
+            return
+        }
+
+        // 门卫：拨号自动化只在微信界面内执行。
+        // 若事件源不是微信（MoreTalk 主界面/桌面/系统UI），不更新 lastWindowClassName，
+        // 也不触发任何步骤，避免自动化在错误界面执行返回/重置。
+        if (WeChatData.index > 0 && eventPackage != "com.tencent.mm") {
             return
         }
 
         lastWindowClassName = currentActivity
+        lastEventPackage = eventPackage
         Log.d(TAG, "Current Activity: $currentActivity, Step: ${WeChatData.index}")
 
         // 如果正在处理，跳过新事件（使用原子操作确保线程安全）
@@ -119,12 +134,16 @@ class SelectToSpeakService : AccessibilityService() {
     }
 
     /**
-     * 判断是否需要跳过某些Activity事件
+     * 判断是否需要跳过某些事件
      */
-    private fun shouldSkipActivity(activityName: String): Boolean {
+    private fun shouldSkipActivity(activityName: String, eventPackage: String): Boolean {
         return activityName.contains("Toast") ||
                 activityName.contains("SoftInputWindow") ||
-                activityName == "com.example.onepass.MainActivity"
+                activityName == "com.example.onepass.MainActivity" ||
+                eventPackage == "com.android.systemui" ||
+                eventPackage == "android" ||
+                eventPackage == "com.example.onepass" ||
+                eventPackage == "com.android.settings"
     }
 
     // ==================== 步骤处理 ====================
@@ -237,21 +256,57 @@ class SelectToSpeakService : AccessibilityService() {
                         return@launch
                     }
                     // 有弹窗
+                    // 疑似弹窗
                     isDialogPage(currentActivity) -> {
-                        Log.d(TAG, ">>> 检测到弹窗，关闭弹窗 <<<")
-                        performGlobalAction(GLOBAL_ACTION_BACK)
-                        waitStep(500)
+                        Log.d(TAG, ">>> 疑似弹窗: $currentActivity, pkg=$lastEventPackage <<<")
+                        if (lastEventPackage == "com.tencent.mm") {
+                            // 在微信内：冷启动的开屏广告页/启动页 className 常与弹窗相似
+                            // （如 com.tencent.mm.ui.widget.dialog）。此时绝不能返回（会把微信退掉），
+                            // 应耐心等待其自动进入首页。开屏广告一般最多停留数秒。
+                            if (launchWaitCount >= MAX_LAUNCH_WAIT) {
+                                Log.d(TAG, ">>> 启动等待超时仍疑似弹窗，尝试关闭并重置 <<<")
+                                performGlobalAction(GLOBAL_ACTION_BACK)
+                                waitStep(500)
+                                launchWaitCount = 0
+                            } else {
+                                Log.d(TAG, ">>> 微信内疑似弹窗/开屏广告页，等待 (${launchWaitCount + 1}/$MAX_LAUNCH_WAIT) <<<")
+                                launchWaitCount++
+                            }
+                            setProcessing(false)
+                            scheduleNextStep(800)
+                            return@launch
+                        }
+                        // 非微信内的系统弹窗（如权限弹窗）：关闭
+                        Log.d(TAG, ">>> 非微信弹窗，关闭 <<<")
                         performGlobalAction(GLOBAL_ACTION_BACK)
                         waitStep(500)
                         setProcessing(false)
                         scheduleNextStep(500)
                         return@launch
                     }
-                    // 其他页面，尝试返回
+                    // 其他页面
                     else -> {
-                        Log.d(TAG, ">>> 在其他页面，当前Activity: $currentActivity <<<")
+                        Log.d(TAG, ">>> 在其他页面，当前Activity: $currentActivity, pkg=$lastEventPackage <<<")
+                        val inWechat = lastEventPackage == "com.tencent.mm"
+                        if (inWechat) {
+                            // 在微信内但非首页：通常是冷启动开屏广告页/启动页。
+                            // 此时不能返回（会把微信退掉），耐心等待其自动进入首页。
+                            if (launchWaitCount >= MAX_LAUNCH_WAIT) {
+                                Log.d(TAG, ">>> 启动等待超时仍非首页，执行返回并重置计数 <<<")
+                                performGlobalAction(GLOBAL_ACTION_BACK)
+                                waitStep(500)
+                                launchWaitCount = 0
+                            } else {
+                                Log.d(TAG, ">>> 微信内非首页，等待进入首页 (${launchWaitCount + 1}/$MAX_LAUNCH_WAIT) <<<")
+                                launchWaitCount++
+                            }
+                            setProcessing(false)
+                            scheduleNextStep(800)
+                            return@launch
+                        }
+                        // 不在微信内（回桌面/其它应用）：执行返回回到微信
                         if (navigationAttempts < MAX_NAVIGATION_ATTEMPTS) {
-                            Log.d(TAG, ">>> 在其他页面，执行返回 (${navigationAttempts + 1}/$MAX_NAVIGATION_ATTEMPTS) <<<")
+                            Log.d(TAG, ">>> 不在微信内，执行返回 (${navigationAttempts + 1}/$MAX_NAVIGATION_ATTEMPTS) <<<")
                             performGlobalAction(GLOBAL_ACTION_BACK)
                             waitStep(500)
                             incrementNavigationAttempts()
@@ -453,15 +508,11 @@ class SelectToSpeakService : AccessibilityService() {
                     return@launch
                 }
 
-                // 确保在聊天界面
-                if (!isChatPage(currentActivity)) {
-                    Log.d(TAG, "不在聊天界面，等待")
-                    setProcessing(false)
-                    scheduleNextStep(300)
-                    return@launch
-                }
-
-                // 查找更多按钮
+                // 查找更多按钮。
+                // 注意：不能再用 isChatPage(className) 判断是否在聊天界面——微信新版聊天界面
+                // 的无障碍事件 className 是 LinearLayout/FrameLayout 等视图类名，不等于 ChattingUI，
+                // 会导致永远判定"不在聊天界面"而卡死（上游原始 bug）。
+                // 正确做法：直接尝试查找"更多"按钮，找不到时用"是否有消息输入框"兜底判断。
                 val moreNode = findMoreButton(rootNode)
 
                 if (moreNode != null) {
@@ -480,8 +531,17 @@ class SelectToSpeakService : AccessibilityService() {
                     scheduleNextStep(500)
                     return@launch
                 } else {
-                    handleRetry("未找到更多按钮", 5)
-                    setProcessing(false)
+                    // 找不到更多按钮：用"是否已有消息输入框"判断是否在聊天界面
+                    val inChat = hasChatInputField(rootNode)
+                    if (inChat) {
+                        Log.d(TAG, "已在聊天界面但更多按钮未就绪，等待界面刷新")
+                        setProcessing(false)
+                        scheduleNextStep(300)
+                    } else {
+                        Log.d(TAG, "未找到更多按钮且无输入框（可能仍在搜索结果页），重试")
+                        handleRetry("未找到更多按钮", 5)
+                        setProcessing(false)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "步骤5处理失败", e)
@@ -702,6 +762,21 @@ class SelectToSpeakService : AccessibilityService() {
         return findClickableNodeByContent(rootNode, "更多", "More")
     }
 
+    /**
+     * 判断当前是否已进入微信聊天界面：聊天界面有可编辑的消息输入框。
+     * 用于步骤5兜底判断（className 在新版微信中不可靠）。
+     */
+    private fun hasChatInputField(rootNode: AccessibilityNodeInfo?): Boolean {
+        if (rootNode == null) return false
+        val editableNodes = mutableListOf<AccessibilityNodeInfo>()
+        findEditableNodes(rootNode, editableNodes)
+        if (editableNodes.isNotEmpty()) {
+            editableNodes.safeRecycleAll()
+            return true
+        }
+        return false
+    }
+
     private fun findCallButton(): AccessibilityNodeInfo? {
         val callText = WeChatData.findText(true)
         Log.d(TAG, "查找通话按钮: $callText")
@@ -871,6 +946,7 @@ class SelectToSpeakService : AccessibilityService() {
     private fun resetRetryAndNavigation() {
         retryCount = 0
         navigationAttempts = 0
+        launchWaitCount = 0
     }
 
     private fun resetAndStop() {
@@ -945,7 +1021,11 @@ class SelectToSpeakService : AccessibilityService() {
     private fun scheduleNextStep(delayMs: Long = 300) {
         cancelNextStep()
         nextStepRunnable = Runnable {
-            if (!isProcessing.get() && WeChatData.index > 0 && WeChatData.index <= 7) {
+            // 主动触发保护：只有上次事件确认在微信内才执行下一步，
+            // 避免在 MoreTalk 主界面/桌面残留的类名触发自动化（导致误返回/退出微信）。
+            if (!isProcessing.get() && WeChatData.index > 0 && WeChatData.index <= 7 &&
+                lastEventPackage == "com.tencent.mm"
+            ) {
                 Log.d(TAG, ">>> 主动触发步骤 ${WeChatData.index} <<<")
                 val currentActivity = lastWindowClassName
                 when (WeChatData.index) {
@@ -957,6 +1037,8 @@ class SelectToSpeakService : AccessibilityService() {
                     6 -> processStep6(currentActivity)
                     7 -> processStep7(currentActivity)
                 }
+            } else {
+                Log.d(TAG, "主动触发被跳过（不在微信内或状态不符），index=${WeChatData.index} pkg=$lastEventPackage")
             }
         }
         mainHandler.postDelayed(nextStepRunnable!!, getStepDelay(delayMs))

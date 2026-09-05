@@ -56,6 +56,7 @@ import com.example.onepass.presentation.adapter.HomeContactAdapter
 import com.example.onepass.service.BundledSpeechEngine
 import com.example.onepass.service.BundledSpeechSupport
 import com.example.onepass.service.FloatingHomeButtonService
+import com.example.onepass.service.FlashlightController
 import com.example.onepass.service.RemoteAssistService
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
@@ -206,6 +207,21 @@ class MainActivity : AppCompatActivity() {
     private val KEY_FLOAT_BALL_ENABLED = "float_ball_enabled"
     private val TOGGLE_WECHAT_READ_ID = "__wechat_read__"
 
+    /** 手电筒相机权限请求（授予后立即开关手电筒） */
+    private val torchPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            val on = FlashlightController.toggle(this)
+            // 更新手电筒瓦片状态
+            commonApps.find { it.isTorch }?.toggleOn = on
+            commonAppsAdapter.notifyDataSetChanged()
+            Toast.makeText(this, if (on) "手电筒已开" else "手电筒已关", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "未获得相机权限，无法使用手电筒", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -252,6 +268,9 @@ class MainActivity : AppCompatActivity() {
         locationManager = LocationManager(this)
         bundledSpeechSupport = BundledSpeechSupport(this)
         Logger.d("locationManager 初始化完成")
+
+        // 初始化手电筒控制器（注册 TorchCallback，保持开关状态准确）
+        FlashlightController.initialize(this)
         
         // 不在onCreate中初始化TextToSpeech，而是在onResume中初始化
         Logger.d("准备在onResume中初始化TextToSpeech")
@@ -1672,10 +1691,12 @@ class MainActivity : AppCompatActivity() {
             if (intent != null) {
                 WeChatData.updateValue(contact.wechatNote)
                 WeChatData.updateVideo(true)
-                WeChatData.updateIndex(1)
-                Log.d(TAG, "设置微信数据 - 昵称: ${contact.wechatNote}, 视频: true, 索引: 1")
-                
+                Log.d(TAG, "设置微信数据 - 昵称: ${contact.wechatNote}, 视频: true")
+
                 startActivity(intent)
+                // 微信启动后再设置步骤索引：避免 MoreTalk 界面自身事件提前触发步骤1
+                // （事件源不是微信时步骤1 不会执行，但延迟设置更稳妥）
+                WeChatData.updateIndex(1)
                 Toast.makeText(this, "正在发起微信视频通话", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "未安装微信", Toast.LENGTH_SHORT).show()
@@ -1704,8 +1725,9 @@ class MainActivity : AppCompatActivity() {
             if (intent != null) {
                 WeChatData.updateValue(contact.wechatNote)
                 WeChatData.updateVideo(false)
-                WeChatData.updateIndex(1)
                 startActivity(intent)
+                // 微信启动后再设置步骤索引（原因同视频）
+                WeChatData.updateIndex(1)
                 
                 Toast.makeText(this, "正在发起微信语音通话", Toast.LENGTH_SHORT).show()
             } else {
@@ -1890,6 +1912,8 @@ class MainActivity : AppCompatActivity() {
         
         // 固定追加「微信点读」开关瓦片
         appendWechatReadTile()
+        // 固定追加「手电筒」开关瓦片（集成在应用内）
+        appendTorchTile()
         // 固定追加「远程协助」瓦片（运行状态显示）
         appendRemoteAssistTile()
         
@@ -1923,6 +1947,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 固定追加「手电筒」开关瓦片（显示开/关状态，点击直接开关，集成在应用内）
+     */
+    private fun appendTorchTile() {
+        val icon = ContextCompat.getDrawable(this, R.drawable.ic_flashlight) ?: return
+        commonApps.add(
+            CommonApp("__torch__", "手电筒", icon, isTorch = true, toggleOn = FlashlightController.isTorchOn)
+        )
+    }
+
+    /**
      * 固定追加「远程协助」瓦片（绿色=运行中，点击启动/再次点击无操作）
      */
     private fun appendRemoteAssistTile() {
@@ -1943,6 +1977,24 @@ class MainActivity : AppCompatActivity() {
      * 常用应用点击：开关瓦片切换点读状态，远程协助启动服务，其余启动应用
      */
     private fun handleCommonAppClick(app: CommonApp) {
+        if (app.isTorch) {
+            // 手电筒：直接开关，更新瓦片状态
+            if (!FlashlightController.hasFlash(this)) {
+                Toast.makeText(this, "该手机不支持手电筒", Toast.LENGTH_SHORT).show()
+                return
+            }
+            if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                torchPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                return
+            }
+            val on = FlashlightController.toggle(this)
+            app.toggleOn = on
+            commonAppsAdapter.notifyDataSetChanged()
+            Toast.makeText(this, if (on) "手电筒已开" else "手电筒已关", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (app.isRemoteAssist) {
             if (RemoteAssistService.isRunning) {
                 // 运行中：展示连接信息，可停止
@@ -2001,6 +2053,7 @@ data class CommonApp(
     val appIcon: Drawable,
     val isToggle: Boolean = false,
     val isRemoteAssist: Boolean = false,
+    val isTorch: Boolean = false,
     var toggleOn: Boolean = false
 )
 
@@ -2030,11 +2083,13 @@ class CommonAppAdapter(
             iconView.setImageDrawable(app.appIcon)
             nameView.text = app.appName
 
-            if (app.isToggle || app.isRemoteAssist) {
+            if (app.isToggle || app.isRemoteAssist || app.isTorch) {
                 // 状态瓦片：开=绿色，关=灰色，名称带状态
                 nameView.text = when {
                     app.isRemoteAssist ->
                         if (app.toggleOn) "远程协助（运行中）" else "远程协助"
+                    app.isTorch ->
+                        if (app.toggleOn) "手电筒（开）" else "手电筒（关）"
                     else ->
                         if (app.toggleOn) "微信点读（开）" else "微信点读（关）"
                 }
