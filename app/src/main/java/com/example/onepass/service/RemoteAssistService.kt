@@ -108,17 +108,17 @@ class RemoteAssistService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // 看门狗：本 ROM 每个虚拟显示仅产 1 帧，停滞 2 秒即重建以持续供帧
+    // 看门狗：本 ROM 虚拟显示偶发停摆，停滞 700ms 即重建（恢复越快操作延迟越低）
     private val watchdogRunnable = object : Runnable {
         override fun run() {
             if (running.get() && mediaProjection != null) {
                 val stall = System.currentTimeMillis() - lastFrameAt
-                if (stall > 2000) {
+                if (stall > 700) {
                     Logger.w(TAG, "采集停滞 ${stall}ms，重建虚拟显示")
                     runCatching { createCapture(captureWidth, captureHeight, captureDensity) }
                 }
             }
-            mainHandler.postDelayed(this, 1000)
+            mainHandler.postDelayed(this, 300)
         }
     }
 
@@ -370,15 +370,21 @@ class RemoteAssistService : Service() {
                 uri == "/stream.mjpeg" -> mjpegResponse()
 
                 uri == "/frame" -> {
-                    // 单帧：JS 轮询用，返回最新 JPEG 图片
+                    // 单帧：返回最新 JPEG；X-Staleness 头 = 帧龄（页面用来显示实时延迟）
                     val jpeg = service.latestJpeg
                     if (jpeg != null) {
-                        newFixedLengthResponse(
+                        val response = newFixedLengthResponse(
                             Response.Status.OK,
                             "image/jpeg",
                             java.io.ByteArrayInputStream(jpeg),
                             jpeg.size.toLong()
                         )
+                        response.addHeader("Cache-Control", "no-store, no-cache, must-revalidate")
+                        response.addHeader(
+                            "X-Staleness",
+                            (System.currentTimeMillis() - service.lastFrameAt).toString()
+                        )
+                        response
                     } else {
                         newFixedLengthResponse(
                             Response.Status.INTERNAL_ERROR,
@@ -457,13 +463,26 @@ class RemoteAssistService : Service() {
                 var img = document.getElementById('stream');
                 var hint = document.getElementById('hint');
                 var downX = 0, downY = 0, dragging = false, active = false;
+                var lastUrl = null;
 
-                // 单帧轮询，兼容所有浏览器
-                function refresh() {
-                  img.src = '/frame?t=' + Date.now();
+                // fetch-blob 链式拉帧：每帧加载完立即请求下一帧，无堆积；并实时显示帧龄
+                function poll() {
+                  fetch('/frame?t=' + Date.now(), {cache: 'no-store'}).then(function(resp) {
+                    var staleness = resp.headers.get('X-Staleness');
+                    if (staleness !== null) {
+                      hint.textContent = '画面延迟约 ' + staleness + 'ms（点=点击，拖=滑动）';
+                    }
+                    return resp.blob();
+                  }).then(function(blob) {
+                    if (lastUrl) { URL.revokeObjectURL(lastUrl); }
+                    lastUrl = URL.createObjectURL(blob);
+                    img.src = lastUrl;
+                    poll();
+                  }).catch(function() {
+                    setTimeout(poll, 300);
+                  });
                 }
-                setInterval(refresh, 120);
-                refresh();
+                poll();
 
                 function toScreen(clientX, clientY) {
                   var rect = img.getBoundingClientRect();
