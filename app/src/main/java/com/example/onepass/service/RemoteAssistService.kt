@@ -149,6 +149,9 @@ class RemoteAssistService : Service() {
     private var pollThread: HandlerThread? = null
     private var pollHandler: Handler? = null
     private val pollRunning = AtomicBoolean(false)
+    /** 是否已上报屏幕物理分辨率（家属网页据此换算点击坐标） */
+    @Volatile
+    private var metaUploaded = false
     /** 上次上报的帧（避免每轮重复 POST 相同帧，仅新帧才上传） */
     @Volatile
     private var lastUploadedJpeg: ByteArray? = null
@@ -425,10 +428,15 @@ class RemoteAssistService : Service() {
         }
     }
 
-    /** 每轮：上传新帧 + 拉取并执行家属指令，然后调度下一轮（约 300ms） */
+    /** 每轮：上传新帧 + 拉取并执行家属指令，然后调度下一轮（约 150ms） */
     private fun pollLoop() {
         if (!pollRunning.get() || !running.get()) return
         try {
+            // 0) 首次上报屏幕物理分辨率（家属网页据此把画面坐标换算成真实像素）
+            if (!metaUploaded && screenWidth > 0 && screenHeight > 0) {
+                uploadMeta()
+                metaUploaded = true
+            }
             // 1) 上传最新帧（仅当有新帧）
             val jpeg = latestJpeg
             if (jpeg != null && jpeg !== lastUploadedJpeg) {
@@ -441,6 +449,29 @@ class RemoteAssistService : Service() {
             Logger.w("$TAG 轮询异常: ${e.message}")
         }
         pollHandler?.postDelayed(::pollLoop, 150)
+    }
+
+    /** 上报真实屏幕物理分辨率，供家属网页做点击/滑动坐标换算 */
+    private fun uploadMeta() {
+        runCatching {
+            val body = org.json.JSONObject()
+                .put("w", screenWidth)
+                .put("h", screenHeight)
+                .toString()
+            val req = Request.Builder()
+                .url("http://$VPS_HOST:$VPS_PORT/meta?room=$tunnelRoom")
+                .post(okhttp3.RequestBody.create(null, body))
+                .build()
+            tunnelOkHttp?.newCall(req)?.execute()?.use { resp ->
+                if (resp.isSuccessful) {
+                    Logger.d(TAG, "已上报分辨率 ${screenWidth}x$screenHeight")
+                } else {
+                    Logger.w("$TAG 上报分辨率失败 HTTP ${resp.code}")
+                }
+            }
+        }.onFailure { e ->
+            Logger.w("$TAG 上报分辨率异常: ${e.message}")
+        }
     }
 
     private fun uploadFrame(jpeg: ByteArray) {
