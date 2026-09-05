@@ -390,6 +390,8 @@ class RemoteAssistService : Service() {
 
                 uri.startsWith("/tap") -> handleTap(session.parms)
 
+                uri.startsWith("/swipe") -> handleSwipe(session.parms)
+
                 uri == "/status" -> newFixedLengthResponse(
                     Response.Status.OK,
                     "application/json",
@@ -431,6 +433,7 @@ class RemoteAssistService : Service() {
                 var SW = $w, SH = $h;
                 var img = document.getElementById('stream');
                 var hint = document.getElementById('hint');
+                var downX = 0, downY = 0, dragging = false, active = false;
 
                 // 单帧轮询，兼容所有浏览器
                 function refresh() {
@@ -439,17 +442,49 @@ class RemoteAssistService : Service() {
                 setInterval(refresh, 250);
                 refresh();
 
-                img.addEventListener('click', function(e) {
+                function toScreen(clientX, clientY) {
                   var rect = img.getBoundingClientRect();
-                  var x = Math.round((e.clientX - rect.left) * SW / rect.width);
-                  var y = Math.round((e.clientY - rect.top) * SH / rect.height);
-                  hint.textContent = '正在点击 (' + x + ', ' + y + ')…';
-                  fetch('/tap?x=' + x + '&y=' + y).then(function(r) { return r.text(); })
-                    .then(function(t) {
-                      if (t === 'ok') { hint.textContent = '已点击 (' + x + ', ' + y + ')'; }
-                      else { hint.textContent = '点击失败：请确认手机已开启无障碍服务'; }
-                    });
-                });
+                  return {
+                    x: Math.round((clientX - rect.left) * SW / rect.width),
+                    y: Math.round((clientY - rect.top) * SH / rect.height)
+                  };
+                }
+
+                function beginDrag(cx, cy) {
+                  downX = cx; downY = cy; dragging = false; active = true;
+                }
+                function moveDrag(cx, cy) {
+                  if (!active) return;
+                  if (Math.abs(cx - downX) + Math.abs(cy - downY) > 12) dragging = true;
+                }
+                function endDrag(cx, cy) {
+                  if (!active) { active = false; return; }
+                  active = false;
+                  var s = toScreen(downX, downY);
+                  var e = toScreen(cx, cy);
+                  if (dragging) {
+                    fetch('/swipe?x1=' + s.x + '&y1=' + s.y + '&x2=' + e.x + '&y2=' + e.y);
+                    hint.textContent = '已滑动 (' + s.x + ',' + s.y + ') → (' + e.x + ',' + e.y + ')';
+                  } else {
+                    hint.textContent = '正在点击 (' + s.x + ', ' + s.y + ')…';
+                    fetch('/tap?x=' + s.x + '&y=' + s.y).then(function(r) { return r.text(); })
+                      .then(function(t) {
+                        if (t === 'ok') { hint.textContent = '已点击 (' + s.x + ', ' + s.y + ')'; }
+                        else { hint.textContent = '点击失败：请确认手机已开启无障碍服务'; }
+                      });
+                  }
+                }
+
+                // 鼠标
+                img.addEventListener('mousedown', function(e) { beginDrag(e.clientX, e.clientY); });
+                img.addEventListener('mousemove', function(e) { moveDrag(e.clientX, e.clientY); });
+                img.addEventListener('mouseup', function(e) { endDrag(e.clientX, e.clientY); });
+                img.addEventListener('mouseleave', function(e) { if (active) endDrag(e.clientX, e.clientY); });
+
+                // 触摸（移动端浏览器）
+                img.addEventListener('touchstart', function(e) { var t = e.touches[0]; beginDrag(t.clientX, t.clientY); }, {passive:true});
+                img.addEventListener('touchmove', function(e) { var t = e.touches[0]; moveDrag(t.clientX, t.clientY); }, {passive:false});
+                img.addEventListener('touchend', function(e) { var t = e.changedTouches[0]; endDrag(t.clientX, t.clientY); });
               </script>
             </body>
             </html>
@@ -494,6 +529,23 @@ class RemoteAssistService : Service() {
                 return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "need x,y")
             }
             val injected = SelectToSpeakService.performTap(x, y)
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "text/plain",
+                if (injected) "ok" else "accessibility service not ready"
+            )
+        }
+
+        private fun handleSwipe(parms: Map<String, String>): Response {
+            val x1 = parms["x1"]?.toFloatOrNull()
+            val y1 = parms["y1"]?.toFloatOrNull()
+            val x2 = parms["x2"]?.toFloatOrNull()
+            val y2 = parms["y2"]?.toFloatOrNull()
+            if (x1 == null || y1 == null || x2 == null || y2 == null) {
+                return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "need x1,y1,x2,y2")
+            }
+            val duration = parms["duration"]?.toLongOrNull()?.coerceIn(50L, 2000L) ?: 250L
+            val injected = SelectToSpeakService.performSwipe(x1, y1, x2, y2, duration)
             return newFixedLengthResponse(
                 Response.Status.OK,
                 "text/plain",

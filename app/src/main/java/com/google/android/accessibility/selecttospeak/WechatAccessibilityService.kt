@@ -55,6 +55,15 @@ class SelectToSpeakService : AccessibilityService() {
             svc.performClick(x, y)
             return true
         }
+
+        /**
+         * 远程协助：注入一次滑动（无障碍手势），用于滚动/翻页
+         */
+        fun performSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
+            val svc = instance ?: return false
+            svc.performSwipeGesture(x1, y1, x2, y2, durationMs)
+            return true
+        }
     }
 
     // 协程作用域
@@ -964,6 +973,17 @@ class SelectToSpeakService : AccessibilityService() {
         val path = Path()
         path.moveTo(x, y)
         val stroke = GestureDescription.StrokeDescription(path, 0, 100, false)
+        val gesture = GestureDescription.Builder()
+            .addStroke(stroke)
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
+    private fun performSwipeGesture(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long) {
+        val path = Path()
+        path.moveTo(x1, y1)
+        path.lineTo(x2, y2)
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs, false)
         val gesture = GestureDescription.Builder()
             .addStroke(stroke)
             .build()
