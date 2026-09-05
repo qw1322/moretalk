@@ -144,20 +144,22 @@ class CommonAppsActivity : AppCompatActivity() {
             }
             
             var currentOrder = 0
-            val processedPackages = mutableSetOf<String>()
-            
+            val processedKeys = mutableSetOf<String>()
+
             for (resolveInfo in resolveInfos) {
                 val packageName = resolveInfo.activityInfo.packageName
-                
-                // 跳过已处理的应用（避免重复）
-                if (processedPackages.contains(packageName)) {
+                val activityName = resolveInfo.activityInfo.name
+
+                // 按「包名+Activity」去重，避免同一应用的多个入口被折叠
+                val key = "$packageName/$activityName"
+                if (processedKeys.contains(key)) {
                     continue
                 }
-                processedPackages.add(packageName)
-                
-                // 排除当前应用本身
-                if (packageName == this.packageName) {
-                    Log.d(TAG, "跳过当前应用: $packageName")
+                processedKeys.add(key)
+
+                // 排除本应用的桌面主界面，但保留手电筒等快捷入口
+                if (packageName == this.packageName && activityName.endsWith(".MainActivity")) {
+                    Log.d(TAG, "跳过本应用桌面主界面: $activityName")
                     continue
                 }
                 

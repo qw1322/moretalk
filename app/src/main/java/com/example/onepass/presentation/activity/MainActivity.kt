@@ -1,4 +1,4 @@
-﻿package com.example.onepass.presentation.activity
+package com.example.onepass.presentation.activity
 
 import android.Manifest
 import android.animation.ObjectAnimator
@@ -55,6 +55,7 @@ import com.example.onepass.domain.model.WeChatData
 import com.example.onepass.presentation.adapter.HomeContactAdapter
 import com.example.onepass.service.BundledSpeechEngine
 import com.example.onepass.service.BundledSpeechSupport
+import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.utils.PerformanceMonitor
 
@@ -142,7 +143,6 @@ class MainActivity : AppCompatActivity() {
     private val KEY_DATE_STYLE = "date_style"
     private val VALUE_LUNAR = "lunar"
     private val VALUE_SOLAR = "solar"
-    private val KEY_ICON_SIZE = "icon_size"
     private val KEY_SPEECH_RATE = "speech_rate"
     private val KEY_WEATHER_ENABLED = "weather_enabled"
     private val KEY_HOME_DETAIL_MODE = "home_detail_mode"
@@ -191,6 +191,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var textNoContacts: TextView
     private val contacts = mutableListOf<Contact>()
     private lateinit var contactsAdapter: HomeContactAdapter
+
+    // 快捷功能相关
+    private val KEY_FLOAT_BALL_ENABLED = "float_ball_enabled"
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -291,6 +294,7 @@ class MainActivity : AppCompatActivity() {
         updateDate()
         loadCommonApps()
         loadContacts()
+        syncFloatingBallService()
 
         Log.d(TAG, "onResume 完成")
     }
@@ -572,9 +576,7 @@ class MainActivity : AppCompatActivity() {
         recyclerViewCommonApps = findViewById(R.id.recyclerViewCommonApps)
         
         // 设置常用应用RecyclerView
-        val initialCommonAppIconSize = getCommonAppIconSize(
-            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getInt(KEY_ICON_SIZE, 80)
-        )
+        val initialCommonAppIconSize = getCommonAppIconSize()
         commonAppsAdapter = CommonAppAdapter(commonApps, { packageName ->
             launchApp(packageName)
         }, initialCommonAppIconSize)
@@ -618,6 +620,19 @@ class MainActivity : AppCompatActivity() {
 
         weatherCard.setOnClickListener {
             refreshWeatherAndSpeak()
+        }
+    }
+
+    /**
+     * 根据设置与悬浮窗权限同步悬浮球服务状态
+     */
+    private fun syncFloatingBallService() {
+        val enabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_FLOAT_BALL_ENABLED, true)
+        if (enabled && hasOverlayPermission()) {
+            startService(Intent(this, FloatingHomeButtonService::class.java))
+        } else if (!enabled) {
+            stopService(Intent(this, FloatingHomeButtonService::class.java))
         }
     }
 
@@ -1743,7 +1758,13 @@ class MainActivity : AppCompatActivity() {
     
     private fun launchApp(packageName: String) {
         Log.d(TAG, "启动应用: $packageName")
-        
+
+        // 本应用快捷入口（手电筒）特殊处理
+        if (packageName == this.packageName) {
+            startActivity(Intent(this, TorchActivity::class.java))
+            return
+        }
+
         try {
             val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             if (launchIntent != null) {
@@ -1778,8 +1799,7 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, "开始加载常用应用")
 
         // 从 SharedPreferences 加载图标大小设置
-        val iconSizeValue = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getInt(KEY_ICON_SIZE, 80)
-        val iconSize = getCommonAppIconSize(iconSizeValue)
+        val iconSize = getCommonAppIconSize()
         
         // 控制标题大小
         val originalTitleSize = 23f // 原始大小23sp
@@ -1840,14 +1860,24 @@ class MainActivity : AppCompatActivity() {
         // 加载应用信息
         for (packageName in sortedApps) {
             try {
-                val packageInfo = packageManager.getPackageInfo(packageName, 0)
-                val appName = packageInfo.applicationInfo?.loadLabel(packageManager)?.toString() ?: packageName
-                val appIcon = packageInfo.applicationInfo?.loadIcon(packageManager)
-                
-                if (appIcon != null) {
-                    commonApps.add(CommonApp(packageName, appName, appIcon))
-                    Log.d(TAG, "加载应用: $appName ($packageName)")
+                val appName: String
+                val appIcon: Drawable
+                if (packageName == this.packageName) {
+                    // 本应用的快捷入口（手电筒）：按 Activity 解析名称与图标
+                    val activityInfo = packageManager.getActivityInfo(
+                        android.content.ComponentName(packageName, TorchActivity::class.java.name),
+                        0
+                    )
+                    appName = activityInfo.loadLabel(packageManager).toString()
+                    appIcon = activityInfo.loadIcon(packageManager)
+                } else {
+                    val packageInfo = packageManager.getPackageInfo(packageName, 0)
+                    appName = packageInfo.applicationInfo?.loadLabel(packageManager)?.toString() ?: packageName
+                    appIcon = packageInfo.applicationInfo?.loadIcon(packageManager) ?: continue
                 }
+
+                commonApps.add(CommonApp(packageName, appName, appIcon))
+                Log.d(TAG, "加载应用: $appName ($packageName)")
             } catch (e: Exception) {
                 Log.e(TAG, "加载应用失败: $packageName", e)
             }
@@ -1872,10 +1902,15 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, "常用应用加载完成")
     }
 
-    private fun getCommonAppIconSize(iconSizeValue: Int): Int {
-        val baseIconSize = 100 + (iconSizeValue * 140 / 100)
-        val originalIconSize = (baseIconSize * 0.7 * 0.9 * 1.3 * 1.2).toInt()
-        return GlobalScaleManager.getScaledValue(this, originalIconSize)
+    /**
+     * 常用应用图标尺寸：与桌面悬浮球（76dp）同尺寸，按屏幕密度换算。
+     * 缩放比例以默认 80% 为基准归一，保证默认状态即与悬浮球一致。
+     */
+    private fun getCommonAppIconSize(): Int {
+        val baseDp = 76
+        val density = resources.displayMetrics.density
+        val normalizedFactor = GlobalScaleManager.getScaleFactor(this) / 0.8f
+        return (baseDp * density * normalizedFactor).toInt()
     }
 }
 

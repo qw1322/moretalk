@@ -24,6 +24,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.example.onepass.R
 import com.example.onepass.core.config.GlobalScaleManager
 import com.example.onepass.service.BundledSpeechSupport
+import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.SpeechEngineMode
 
 class SettingsActivity : AppCompatActivity() {
@@ -87,6 +88,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var textWeatherDesc: TextView
     private lateinit var textSpeechRateTitle: TextView
     private lateinit var textSpeechEngineTitle: TextView
+    private lateinit var switchFloatingBall: Switch
+    private lateinit var textFloatingBallTitle: TextView
+    private lateinit var textFloatingBallDesc: TextView
 
     private val prefs by lazy {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -116,6 +120,33 @@ class SettingsActivity : AppCompatActivity() {
 
         val scalePercentage = GlobalScaleManager.getScalePercentage(this)
         applyScaleEffects(scalePercentage)
+        syncFloatingBallService()
+    }
+
+    /**
+     * 按开关状态与悬浮窗权限同步悬浮球服务（从权限设置页返回时也会执行）
+     */
+    private fun syncFloatingBallService() {
+        val enabled = prefs.getBoolean(KEY_FLOAT_BALL_ENABLED, true)
+        if (enabled && Settings.canDrawOverlays(this)) {
+            startFloatingBallService()
+        } else if (!enabled) {
+            stopFloatingBallService()
+        }
+    }
+
+    private fun startFloatingBallService() {
+        startService(Intent(this, FloatingHomeButtonService::class.java))
+    }
+
+    private fun stopFloatingBallService() {
+        stopService(Intent(this, FloatingHomeButtonService::class.java))
+    }
+
+    private fun requestOverlayPermission() {
+        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+        intent.data = android.net.Uri.parse("package:$packageName")
+        startActivity(intent)
     }
 
     private fun initViews() {
@@ -150,6 +181,9 @@ class SettingsActivity : AppCompatActivity() {
         commonAppsContainer = findViewById(R.id.commonAppsContainer)
         textNoCommonApps = findViewById(R.id.textNoCommonApps)
         btnContacts = findViewById(R.id.btnContacts)
+        switchFloatingBall = findViewById(R.id.switchFloatingBall)
+        textFloatingBallTitle = findViewById(R.id.textFloatingBallTitle)
+        textFloatingBallDesc = findViewById(R.id.textFloatingBallDesc)
 
         textDateStyle = findViewById(R.id.textDateStyle)
         textCommonAppsTitle = findViewById(R.id.textCommonAppsTitle)
@@ -194,6 +228,8 @@ class SettingsActivity : AppCompatActivity() {
 
         val lowBatteryReminderEnabled = prefs.getBoolean(KEY_LOW_BATTERY_REMINDER_ENABLED, true)
         switchLowBatteryReminder.isChecked = lowBatteryReminderEnabled
+
+        switchFloatingBall.isChecked = prefs.getBoolean(KEY_FLOAT_BALL_ENABLED, true)
 
         when (prefs.getString(KEY_HOME_DETAIL_MODE, VALUE_HOME_DETAIL_BATTERY)) {
             VALUE_HOME_DETAIL_WEATHER -> radioDetailWeather.isChecked = true
@@ -321,6 +357,21 @@ class SettingsActivity : AppCompatActivity() {
                 if (isChecked) "已开启低电量提醒" else "已关闭低电量提醒",
                 Toast.LENGTH_SHORT
             ).show()
+        }
+
+        switchFloatingBall.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(KEY_FLOAT_BALL_ENABLED, isChecked).apply()
+            if (isChecked) {
+                if (!Settings.canDrawOverlays(this)) {
+                    Toast.makeText(this, "请授予悬浮窗权限后自动开启悬浮球", Toast.LENGTH_LONG).show()
+                    requestOverlayPermission()
+                } else {
+                    startFloatingBallService()
+                }
+            } else {
+                stopFloatingBallService()
+                Toast.makeText(this, "已关闭桌面悬浮球", Toast.LENGTH_SHORT).show()
+            }
         }
 
         seekBarBroadcastVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -472,8 +523,17 @@ class SettingsActivity : AppCompatActivity() {
 
         for (packageName in sortedApps) {
             runCatching {
-                val packageInfo = packageManager.getPackageInfo(packageName, 0)
-                val appIcon = packageInfo.applicationInfo?.loadIcon(packageManager) ?: return@runCatching
+                val appIcon: android.graphics.drawable.Drawable = if (packageName == this.packageName) {
+                    // 本应用快捷入口（手电筒）按 Activity 解析图标
+                    val activityInfo = packageManager.getActivityInfo(
+                        android.content.ComponentName(packageName, TorchActivity::class.java.name),
+                        0
+                    )
+                    activityInfo.loadIcon(packageManager)
+                } else {
+                    val packageInfo = packageManager.getPackageInfo(packageName, 0)
+                    packageInfo.applicationInfo?.loadIcon(packageManager) ?: return@runCatching
+                }
                 val item = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
@@ -495,11 +555,15 @@ class SettingsActivity : AppCompatActivity() {
 
                 item.addView(iconView)
                 item.setOnClickListener {
-                    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                    if (launchIntent != null) {
-                        startActivity(launchIntent)
+                    if (packageName == this@SettingsActivity.packageName) {
+                        startActivity(Intent(this@SettingsActivity, TorchActivity::class.java))
                     } else {
-                        Toast.makeText(this, "无法打开该应用", Toast.LENGTH_SHORT).show()
+                        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                        if (launchIntent != null) {
+                            startActivity(launchIntent)
+                        } else {
+                            Toast.makeText(this@SettingsActivity, "无法打开该应用", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
                 commonAppsContainer.addView(item)
@@ -536,6 +600,7 @@ class SettingsActivity : AppCompatActivity() {
         textWeatherTitle.textSize = scaledTitleSize
         textSpeechEngineTitle.textSize = scaledTitleSize
         textSpeechRateTitle.textSize = scaledTitleSize
+        textFloatingBallTitle.textSize = scaledTitleSize
 
         radioLunar.textSize = scaledOptionSize
         radioSolar.textSize = scaledOptionSize
@@ -554,6 +619,7 @@ class SettingsActivity : AppCompatActivity() {
         textLowBatteryReminderDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
         textBroadcastVolumeDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
         textWeatherDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
+        textFloatingBallDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
 
         btnSetDefaultLauncher.textSize = scaledOptionSize
         btnClearDefaultLauncher.textSize = scaledOptionSize
@@ -595,5 +661,6 @@ class SettingsActivity : AppCompatActivity() {
         private const val KEY_SPEECH_RATE = "speech_rate"
         private const val KEY_COMMON_APPS = "common_apps"
         private const val KEY_APP_ORDERS = "app_orders"
+        private const val KEY_FLOAT_BALL_ENABLED = "float_ball_enabled"
     }
 }
