@@ -56,6 +56,7 @@ import com.example.onepass.presentation.adapter.HomeContactAdapter
 import com.example.onepass.service.BundledSpeechEngine
 import com.example.onepass.service.BundledSpeechSupport
 import com.example.onepass.service.FloatingHomeButtonService
+import com.example.onepass.service.RemoteAssistService
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
 import com.example.onepass.utils.PerformanceMonitor
@@ -1889,6 +1890,8 @@ class MainActivity : AppCompatActivity() {
         
         // 固定追加「微信点读」开关瓦片
         appendWechatReadTile()
+        // 固定追加「远程协助」瓦片（运行状态显示）
+        appendRemoteAssistTile()
         
         // 创建新的适配器
         commonAppsAdapter = CommonAppAdapter(commonApps, ::handleCommonAppClick, iconSize)
@@ -1920,9 +1923,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 常用应用点击：开关瓦片切换点读状态，其余启动应用
+     * 固定追加「远程协助」瓦片（绿色=运行中，点击启动/再次点击无操作）
+     */
+    private fun appendRemoteAssistTile() {
+        val running = RemoteAssistService.isRunning
+        val icon = ContextCompat.getDrawable(this, R.drawable.ic_remote_assist) ?: return
+        commonApps.add(
+            CommonApp(
+                "__remote_assist__",
+                "远程协助",
+                icon,
+                isRemoteAssist = true,
+                toggleOn = running
+            )
+        )
+    }
+
+    /**
+     * 常用应用点击：开关瓦片切换点读状态，远程协助启动服务，其余启动应用
      */
     private fun handleCommonAppClick(app: CommonApp) {
+        if (app.isRemoteAssist) {
+            startActivity(Intent(this, RemoteAssistActivity::class.java))
+            return
+        }
         if (!app.isToggle) {
             launchApp(app.packageName)
             return
@@ -1957,6 +1981,7 @@ data class CommonApp(
     val appName: String,
     val appIcon: Drawable,
     val isToggle: Boolean = false,
+    val isRemoteAssist: Boolean = false,
     var toggleOn: Boolean = false
 )
 
@@ -1986,9 +2011,14 @@ class CommonAppAdapter(
             iconView.setImageDrawable(app.appIcon)
             nameView.text = app.appName
 
-            if (app.isToggle) {
-                // 开关瓦片：绿色=开，灰色=关，名称带状态
-                nameView.text = if (app.toggleOn) "微信点读（开）" else "微信点读（关）"
+            if (app.isToggle || app.isRemoteAssist) {
+                // 状态瓦片：开=绿色，关=灰色，名称带状态
+                nameView.text = when {
+                    app.isRemoteAssist ->
+                        if (app.toggleOn) "远程协助（运行中）" else "远程协助"
+                    else ->
+                        if (app.toggleOn) "微信点读（开）" else "微信点读（关）"
+                }
                 nameView.setTextColor(
                     ContextCompat.getColor(
                         itemView.context,

@@ -52,6 +52,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation(files("libs/lunar-1.7.7.jar"))
+    implementation(libs.nanohttpd)
 //    implementation("com.github.6tail:lunar-java:1.7.7")
 
     testImplementation(libs.junit)

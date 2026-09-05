@@ -58,6 +58,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnClearDefaultLauncher: Button
 
     private lateinit var btnCommonApps: Button
+    private lateinit var btnRemoteAssist: Button
     private lateinit var switchWeather: Switch
     private lateinit var switchDirectCall: Switch
     private lateinit var switchLowBatteryReminder: Switch
@@ -171,6 +172,7 @@ class SettingsActivity : AppCompatActivity() {
         btnClearDefaultLauncher = findViewById(R.id.btnClearDefaultLauncher)
 
         btnCommonApps = findViewById(R.id.btnCommonApps)
+        btnRemoteAssist = findViewById(R.id.btnRemoteAssist)
         switchWeather = findViewById(R.id.switchWeather)
         switchDirectCall = findViewById(R.id.switchDirectCall)
         switchLowBatteryReminder = findViewById(R.id.switchLowBatteryReminder)
@@ -324,6 +326,10 @@ class SettingsActivity : AppCompatActivity() {
 
         btnCommonApps.setOnClickListener {
             startActivity(Intent(this, CommonAppsActivity::class.java))
+        }
+
+        btnRemoteAssist.setOnClickListener {
+            startActivity(Intent(this, RemoteAssistActivity::class.java))
         }
 
         btnContacts.setOnClickListener {
@@ -648,6 +654,7 @@ class SettingsActivity : AppCompatActivity() {
         btnClearDefaultLauncher.textSize = scaledOptionSize
         btnCommonApps.textSize = scaledButtonSize
         btnContacts.textSize = scaledButtonSize
+        btnRemoteAssist.textSize = scaledButtonSize
         // 语速显示固定大小，不随图标缩放变化。
         textSpeechRate.textSize = 24f
     }

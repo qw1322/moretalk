@@ -28,6 +28,8 @@
   <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
   <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
   
   <application
         android:allowBackup="true"
@@ -52,6 +54,15 @@
     
     <service
         android:name=".service.FloatingHomeButtonService"
+        android:exported="false" />
+
+    <service
+        android:name=".service.RemoteAssistService"
+        android:exported="false"
+        android:foregroundServiceType="mediaProjection" />
+
+    <activity
+        android:name=".presentation.activity.RemoteAssistActivity"
         android:exported="false" />
 
     <provider

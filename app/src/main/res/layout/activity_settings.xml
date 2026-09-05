@@ -681,10 +681,18 @@
         </androidx.cardview.widget.CardView>
 
         <Button
-            android:id="@+id/btnSetDefaultLauncher"
+            android:id="@+id/btnRemoteAssist"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:layout_marginTop="24dp"
+            android:text="远程协助（屏幕共享 + 远程控制）"
+            android:textSize="24sp" />
+
+        <Button
+            android:id="@+id/btnSetDefaultLauncher"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="12dp"
             android:text="设为默认桌面"
             android:textSize="24sp" />
 

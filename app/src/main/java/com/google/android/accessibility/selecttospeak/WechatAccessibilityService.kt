@@ -43,6 +43,18 @@ class SelectToSpeakService : AccessibilityService() {
         private const val TAG = "WechatAccessibility"
         private const val MAX_RETRY_COUNT = 3
         private const val MAX_NAVIGATION_ATTEMPTS = 3
+
+        @Volatile
+        private var instance: SelectToSpeakService? = null
+
+        /**
+         * 远程协助：注入一次屏幕点击（无障碍手势）
+         */
+        fun performTap(x: Float, y: Float): Boolean {
+            val svc = instance ?: return false
+            svc.performClick(x, y)
+            return true
+        }
     }
 
     // 协程作用域
@@ -884,6 +896,7 @@ class SelectToSpeakService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         Log.d(TAG, "无障碍服务已连接")
         messageReader.init()
     }
@@ -897,6 +910,7 @@ class SelectToSpeakService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         Log.d(TAG, "无障碍服务已断开")
+        if (instance === this) instance = null
         messageReader.shutdown()
         resetAndStop()
         isProcessing.set(false)
