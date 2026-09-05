@@ -44,9 +44,9 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="星期五"
+            android:text="星期六"
             android:textColor="#333333"
-            android:textSize="20sp"
+            android:textSize="24sp"
             android:textStyle="bold"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/dateText" />
@@ -57,9 +57,10 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="12dp"
             android:layout_marginTop="4dp"
-            android:text="14:30"
-            android:textColor="#666666"
-            android:textSize="20sp"
+            android:text="20:44:15"
+            android:textColor="#333333"
+            android:textSize="24sp"
+            android:textStyle="bold"
             app:layout_constraintStart_toEndOf="@id/weekText"
             app:layout_constraintTop_toBottomOf="@id/dateText" />
 

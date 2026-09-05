@@ -129,7 +129,7 @@ class MainActivity : AppCompatActivity() {
     private val timeRunnable = object : Runnable {
         override fun run() {
             updateTimeText()
-            handler.postDelayed(this, 30_000)
+            handler.postDelayed(this, 1000)
         }
     }
 
@@ -258,7 +258,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         updateDate()
         updateTimeText()
-        handler.postDelayed(timeRunnable, 30_000)
+        handler.postDelayed(timeRunnable, 1000)
         preloadBundledSpeechEngine()
         checkLocationPermissionAndFetchWeather()
         
@@ -945,11 +945,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 刷新顶部具体时间（每 30 秒一次，分钟级精度）
+     * 刷新顶部实时时间（含秒，每秒更新）
      */
     private fun updateTimeText() {
         if (!::timeText.isInitialized) return
-        timeText.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+        timeText.text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
     }
 
     private fun updateDate() {
@@ -996,7 +996,7 @@ class MainActivity : AppCompatActivity() {
 
         dateTypeText.textSize = maxSize
         dateText.textSize = maxSize
-        weekText.textSize = maxSize
+        // 星期与时间固定在 24sp（XML 定义），不参与第一行自适应缩放
 
         val availableWidth = settingsIcon.left - dateTypeText.left - dpToPx(8f)
         if (availableWidth <= 0) return
