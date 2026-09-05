@@ -24,6 +24,8 @@ class RemoteAssistActivity : AppCompatActivity() {
         Logger.d("RemoteAssist", "授权回调 resultCode=${result.resultCode} data=${result.data != null}")
         if (result.resultCode == RESULT_OK && result.data != null) {
             try {
+                // 先确保固定房间号已生成（service onCreate 也会做，这里保证回调时即拿到固定值用于展示）
+                RemoteAssistService.loadOrCreateRoom(this)
                 RemoteAssistService.start(this, result.resultCode, result.data!!)
                 Logger.d("RemoteAssist", "服务启动请求已发出")
                 Toast.makeText(

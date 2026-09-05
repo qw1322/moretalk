@@ -72,10 +72,27 @@ class RemoteAssistService : Service() {
         var isRunning: Boolean = false
             private set
 
-        /** 公网隧道房间号（家属浏览器经中继访问用） */
+        /** 公网隧道房间号（家属浏览器经中继访问用）；持久化为固定值，家属可用固定网址访问 */
         @Volatile
-        var tunnelRoom: String = "MT${(100000..999999).random()}"
+        var tunnelRoom: String = "MT2024"
             internal set
+
+        private const val PREFS_NAME = "remote_assist_prefs"
+        private const val KEY_ROOM = "tunnel_room"
+
+        /**
+         * 加载固定房间号：首次启动生成并持久化，之后每次启动返回同一值。
+         * 这样家属可长期用固定网址 http://VPS_HOST:VPS_PORT/?room=XXX 访问，无需每次查号。
+         */
+        fun loadOrCreateRoom(context: Context) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            var room = prefs.getString(KEY_ROOM, null)
+            if (room.isNullOrBlank()) {
+                room = "MT${(100000..999999).random()}"
+                prefs.edit().putString(KEY_ROOM, room).apply()
+            }
+            tunnelRoom = room
+        }
 
         fun start(context: Context, resultCode: Int, resultData: Intent) {
             val intent = Intent(context, RemoteAssistService::class.java).apply {
@@ -125,12 +142,16 @@ class RemoteAssistService : Service() {
     internal var lastFrameAt = 0L
     private var imageArriveCount = 0L
 
-    // WebSocket 控制服务（LAN）与公网隧道
+    // WebSocket 控制服务（LAN）与公网「上传+轮询」客户端
     private var wsServer: NanoWsdServer? = null
     private val wsHandler = RemoteAssistWsHandler(this)
     private var tunnelOkHttp: OkHttpClient? = null
-    private var tunnelWs: okhttp3.WebSocket? = null
-    private val tunnelConnecting = AtomicBoolean(false)
+    private var pollThread: HandlerThread? = null
+    private var pollHandler: Handler? = null
+    private val pollRunning = AtomicBoolean(false)
+    /** 上次上报的帧（避免每轮重复 POST 相同帧，仅新帧才上传） */
+    @Volatile
+    private var lastUploadedJpeg: ByteArray? = null
 
     /** UPnP 映射后的公网访问地址（若成功） */
     @Volatile
@@ -157,6 +178,9 @@ class RemoteAssistService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        // 加载固定房间号（首次启动生成并持久化到本地，之后每次启动不变，
+        // 家属可用固定网址 http://VPS:8899/?room=XXX 长期访问，无需每次查房间号）
+        loadOrCreateRoom(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -217,10 +241,12 @@ class RemoteAssistService : Service() {
         running.set(false)
         isRunning = false
         mainHandler.removeCallbacks(watchdogRunnable)
+        pollRunning.set(false)
+        pollHandler?.removeCallbacksAndMessages(null)
         runCatching { wsServer?.stop() }
         wsServer = null
-        runCatching { tunnelWs?.close(1000, "stop") }
-        tunnelWs = null
+        pollThread?.quitSafely()
+        pollThread = null
         runCatching { tunnelOkHttp?.dispatcher?.executorService?.shutdown() }
         tunnelOkHttp = null
         runCatching { screenWakeLock?.let { if (it.isHeld) it.release() } }
@@ -297,8 +323,8 @@ class RemoteAssistService : Service() {
             Logger.d(TAG, "HTTP 服务已启动 :$PORT")
             // WebSocket 控制服务（LAN 页面 + 控制）
             startWsServer()
-            // 公网隧道（主动出站连接 VPS 中继）
-            startTunnel()
+            // 公网通道：手机上传帧到 VPS + 轮询拉取家属指令（短连接，规避 CGNAT 长连接被重置）
+            startPollUpload()
             // 尝试 UPnP 端口映射（NAT 外网直连）
             val localIp = getLocalIpAddress()
             if (localIp != null) {
@@ -373,74 +399,96 @@ class RemoteAssistService : Service() {
         Logger.d(TAG, "WS 控制服务已启动 :$WS_PORT，房间 $tunnelRoom")
     }
 
-    private fun startTunnel() {
-        if (tunnelConnecting.get() || tunnelWs != null) return
-        tunnelConnecting.set(true)
+    /**
+     * 公网通道 v2：「手机上传帧 + 轮询指令」（HTTP 短连接）。
+     * 每轮循环：若有新帧则 POST /frame 上传；GET /cmd 拉取家属指令执行。
+     * 短连接单次请求/响应，天然规避 CGNAT 长连接被运营商/路由器周期性重置的问题。
+     */
+    private fun startPollUpload() {
+        if (pollRunning.get()) return
+        pollRunning.set(true)
         try {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(0, TimeUnit.MILLISECONDS)
-                .pingInterval(20, TimeUnit.SECONDS)
-                .build()
-            tunnelOkHttp = client
-            val req = Request.Builder()
-                .url("ws://$VPS_HOST:$VPS_PORT/tunnel?room=$tunnelRoom")
-                .build()
-            tunnelWs = client.newWebSocket(req, object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    tunnelConnecting.set(false)
-                    Logger.d(TAG, "公网隧道已连接，房间 $tunnelRoom")
-                }
-
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    Logger.d(TAG, "隧道收到: ${text.take(80)}")
-                    wsHandler.handle(object : RemoteAssistWsHandler.WsSink {
-                        override fun sendText(t: String) {
-                            Logger.d(TAG, "隧道回文本: ${t.take(80)}")
-                            runCatching { webSocket.send(t) }
-                                .onFailure { Logger.e(TAG, "隧道发文本失败: ${it.message}") }
-                        }
-
-                        override fun sendBinary(bytes: ByteArray) {
-                            Logger.d(TAG, "隧道回二进制: ${bytes.size}B")
-                            runCatching { webSocket.send(okio.ByteString.of(*bytes)) }
-                                .onFailure { Logger.e(TAG, "隧道发二进制失败: ${it.message}") }
-                        }
-                    }, text)
-                }
-
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    tunnelWs = null
-                    tunnelConnecting.set(false)
-                    scheduleTunnelReconnect()
-                }
-
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    Logger.w("$TAG 隧道断开: ${t.message}")
-                    tunnelWs = null
-                    tunnelConnecting.set(false)
-                    scheduleTunnelReconnect()
-                }
-            })
+            if (tunnelOkHttp == null) {
+                tunnelOkHttp = OkHttpClient.Builder()
+                    .connectTimeout(10, TimeUnit.SECONDS)
+                    .readTimeout(10, TimeUnit.SECONDS)
+                    .build()
+            }
+            pollThread?.quitSafely()
+            pollThread = HandlerThread("RemoteAssistPoll").apply { start() }
+            pollHandler = Handler(pollThread!!.looper)
+            pollHandler?.post(::pollLoop)
+            Logger.d(TAG, "公网上传+轮询已启动，房间 $tunnelRoom")
         } catch (e: Exception) {
-            tunnelConnecting.set(false)
-            Logger.e(TAG, "隧道启动失败: ${e.message}")
-            scheduleTunnelReconnect()
+            pollRunning.set(false)
+            Logger.e(TAG, "上传轮询启动失败: ${e.message}")
         }
     }
 
-    private fun okHttpSink(ws: WebSocket) = object : RemoteAssistWsHandler.WsSink {
-        override fun sendText(text: String) {
-            runCatching { ws.send(text) }
+    /** 每轮：上传新帧 + 拉取并执行家属指令，然后调度下一轮（约 300ms） */
+    private fun pollLoop() {
+        if (!pollRunning.get() || !running.get()) return
+        try {
+            // 1) 上传最新帧（仅当有新帧）
+            val jpeg = latestJpeg
+            if (jpeg != null && jpeg !== lastUploadedJpeg) {
+                uploadFrame(jpeg)
+                lastUploadedJpeg = jpeg
+            }
+            // 2) 拉取指令
+            pollCommands()
+        } catch (e: Exception) {
+            Logger.w("$TAG 轮询异常: ${e.message}")
         }
+        pollHandler?.postDelayed(::pollLoop, 300)
+    }
 
-        override fun sendBinary(bytes: ByteArray) {
-            runCatching { ws.send(okio.ByteString.of(*bytes)) }
+    private fun uploadFrame(jpeg: ByteArray) {
+        runCatching {
+            val req = Request.Builder()
+                .url("http://$VPS_HOST:$VPS_PORT/frame?room=$tunnelRoom")
+                .post(okhttp3.RequestBody.create(null, jpeg))
+                .build()
+            tunnelOkHttp?.newCall(req)?.execute()?.use { resp ->
+                if (!resp.isSuccessful) Logger.w("$TAG 上传帧失败 HTTP ${resp.code}")
+            }
+        }.onFailure { e ->
+            // 网络抖动属正常，静默跳过，下一轮再试
+            if (System.currentTimeMillis() % 30_000 < 300) {
+                Logger.w("$TAG 上传帧异常: ${e.message}")
+            }
         }
     }
 
-    private fun scheduleTunnelReconnect() {
-        mainHandler.postDelayed({ startTunnel() }, 5000)
+    /** 拉取家属指令并执行（tap/swipe 等），复用 wsHandler 的指令逻辑 */
+    private fun pollCommands() {
+        runCatching {
+            val req = Request.Builder()
+                .url("http://$VPS_HOST:$VPS_PORT/cmd?room=$tunnelRoom")
+                .get()
+                .build()
+            tunnelOkHttp?.newCall(req)?.execute()?.use { resp ->
+                if (!resp.isSuccessful) return
+                val body = resp.body?.string() ?: return
+                if (body.isBlank() || body == "[]") return
+                Logger.d(TAG, "拉取到指令: ${body.take(120)}")
+                val arr = org.json.JSONArray(body)
+                for (i in 0 until arr.length()) {
+                    val cmd = arr.optString(i)
+                    if (cmd.isNotBlank()) {
+                        // 丢弃 sink：指令执行结果不回传（回传对 HTTP 轮询无意义）
+                        wsHandler.handle(object : RemoteAssistWsHandler.WsSink {
+                            override fun sendText(text: String) {}
+                            override fun sendBinary(bytes: ByteArray) {}
+                        }, cmd)
+                    }
+                }
+            }
+        }.onFailure { e ->
+            if (System.currentTimeMillis() % 30_000 < 300) {
+                Logger.w("$TAG 拉指令异常: ${e.message}")
+            }
+        }
     }
 
     private fun imageToJpeg(image: Image, quality: Int): ByteArray? {

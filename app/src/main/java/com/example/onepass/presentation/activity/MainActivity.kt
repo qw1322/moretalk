@@ -1952,7 +1952,7 @@ class MainActivity : AppCompatActivity() {
                     .setMessage(
                         "局域网：http://$ip:${RemoteAssistService.PORT}\n" +
                             "外网房间：${RemoteAssistService.tunnelRoom}\n" +
-                            "外网访问：http://${RemoteAssistService.VPS_HOST}:${RemoteAssistService.VPS_PORT}/?room=${RemoteAssistService.tunnelRoom}\n\n" +
+                            "外网访问：http://${RemoteAssistService.VPS_HOST}:${RemoteAssistService.VPS_PORT}/ctrl?room=${RemoteAssistService.tunnelRoom}\n\n" +
                             "点击【停止】结束远程协助"
                     )
                     .setPositiveButton("停止") { _, _ ->

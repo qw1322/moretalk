@@ -550,7 +550,7 @@ class SettingsActivity : AppCompatActivity() {
             "运行中 · 房间 ${com.example.onepass.service.RemoteAssistService.tunnelRoom}\n" +
                 "外网访问：http://" +
                 com.example.onepass.service.RemoteAssistService.VPS_HOST + ":" +
-                com.example.onepass.service.RemoteAssistService.VPS_PORT + "/?room=" +
+                com.example.onepass.service.RemoteAssistService.VPS_PORT + "/ctrl?room=" +
                 com.example.onepass.service.RemoteAssistService.tunnelRoom
         } else {
             "未运行"
