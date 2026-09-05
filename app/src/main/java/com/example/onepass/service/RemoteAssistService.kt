@@ -106,6 +106,10 @@ class RemoteAssistService : Service() {
     private var lastFrameAt = 0L
     private var imageArriveCount = 0L
 
+    /** UPnP 映射后的公网访问地址（若成功） */
+    @Volatile
+    var publicUrl: String? = null
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // 看门狗：本 ROM 虚拟显示偶发停摆，停滞 700ms 即重建（恢复越快操作延迟越低）
@@ -244,7 +248,15 @@ class RemoteAssistService : Service() {
                     stopSelf()
                 }
             Logger.d(TAG, "HTTP 服务已启动 :$PORT")
-            mainHandler.postDelayed(watchdogRunnable, 3000)
+            // 尝试 UPnP 端口映射（NAT 外网直连）
+            val localIp = getLocalIpAddress()
+            if (localIp != null) {
+                UpnpManager.mapPort(PORT, localIp) { result ->
+                    Logger.d(TAG, "UPnP: ${result.message}，公网地址: ${result.publicUrl ?: "无"}")
+                    publicUrl = result.publicUrl
+                }
+            }
+            mainHandler.postDelayed(watchdogRunnable, 1000)
         } catch (e: Exception) {
             Logger.e(TAG, "setupProjection 异常: ${e.message}", e)
             stopSelf()
@@ -401,7 +413,7 @@ class RemoteAssistService : Service() {
                 uri == "/status" -> newFixedLengthResponse(
                     Response.Status.OK,
                     "application/json",
-                    """{"running":true,"screen":"${service.screenWidth}x${service.screenHeight}"}"""
+                    """{"running":true,"screen":"${service.screenWidth}x${service.screenHeight}","publicUrl":${if (service.publicUrl != null) "\"${service.publicUrl}\"" else "null"}}"""
                 )
 
                 else -> newFixedLengthResponse(
