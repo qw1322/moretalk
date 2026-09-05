@@ -293,6 +293,25 @@ class RemoteAssistService : Service() {
 
                 uri == "/stream.mjpeg" -> mjpegResponse()
 
+                uri == "/frame" -> {
+                    // 单帧：JS 轮询用，返回最新 JPEG 图片
+                    val jpeg = service.latestJpeg
+                    if (jpeg != null) {
+                        newFixedLengthResponse(
+                            Response.Status.OK,
+                            "image/jpeg",
+                            java.io.ByteArrayInputStream(jpeg),
+                            jpeg.size.toLong()
+                        )
+                    } else {
+                        newFixedLengthResponse(
+                            Response.Status.INTERNAL_ERROR,
+                            "text/plain",
+                            "no frame yet"
+                        )
+                    }
+                }
+
                 uri.startsWith("/tap") -> handleTap(session.parms)
 
                 uri == "/status" -> newFixedLengthResponse(
@@ -322,29 +341,38 @@ class RemoteAssistService : Service() {
               <style>
                 body { margin:0; background:#111; color:#fff; font-family:sans-serif; }
                 #bar { padding:10px; text-align:center; font-size:18px; background:#222; }
-                #wrap { position:relative; }
                 img { width:100%; height:auto; display:block; }
                 #hint { position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
-                        background:rgba(0,0,0,.7); padding:8px 16px; border-radius:8px;
-                        font-size:14px; pointer-events:none; }
+                        background:rgba(0,0,0,.75); padding:8px 16px; border-radius:8px;
+                        font-size:14px; pointer-events:none; max-width:92vw; text-align:center; }
               </style>
             </head>
             <body>
               <div id="bar">MoreTalk 远程协助（点击画面即可远程操作）</div>
-              <div id="wrap">
-                <img id="stream" src="/stream.mjpeg" alt="画面加载中...">
-              </div>
+              <img id="stream" alt="画面加载中...">
               <div id="hint">点一下 = 在老人手机上点一下</div>
               <script>
                 var SW = $w, SH = $h;
                 var img = document.getElementById('stream');
                 var hint = document.getElementById('hint');
+
+                // 单帧轮询，兼容所有浏览器
+                function refresh() {
+                  img.src = '/frame?t=' + Date.now();
+                }
+                setInterval(refresh, 250);
+                refresh();
+
                 img.addEventListener('click', function(e) {
                   var rect = img.getBoundingClientRect();
                   var x = Math.round((e.clientX - rect.left) * SW / rect.width);
                   var y = Math.round((e.clientY - rect.top) * SH / rect.height);
-                  hint.textContent = '已点击 (' + x + ', ' + y + ')';
-                  fetch('/tap?x=' + x + '&y=' + y);
+                  hint.textContent = '正在点击 (' + x + ', ' + y + ')…';
+                  fetch('/tap?x=' + x + '&y=' + y).then(function(r) { return r.text(); })
+                    .then(function(t) {
+                      if (t === 'ok') { hint.textContent = '已点击 (' + x + ', ' + y + ')'; }
+                      else { hint.textContent = '点击失败：请确认手机已开启无障碍服务'; }
+                    });
                 });
               </script>
             </body>
