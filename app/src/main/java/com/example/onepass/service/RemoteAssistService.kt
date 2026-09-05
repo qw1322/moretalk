@@ -49,10 +49,10 @@ class RemoteAssistService : Service() {
         const val PORT = 8890
         private const val CHANNEL_ID = "remote_assist"
         private const val NOTIFICATION_ID = 8890
-        private const val FRAME_INTERVAL_MS = 150L
+        private const val FRAME_INTERVAL_MS = 100L
         private const val JPEG_QUALITY = 60
-        // 全分辨率采集：部分 ROM 对缩放的虚拟显示（尺寸与密度不匹配）镜像失效
-        private const val CAPTURE_SCALE = 1.0f
+        // 0.5x 分辨率：帧体积与编码耗时减半，降低端到端延迟（不影响帧率上限）
+        private const val CAPTURE_SCALE = 0.5f
 
         @Volatile
         var isRunning: Boolean = false
@@ -462,7 +462,7 @@ class RemoteAssistService : Service() {
                 function refresh() {
                   img.src = '/frame?t=' + Date.now();
                 }
-                setInterval(refresh, 250);
+                setInterval(refresh, 120);
                 refresh();
 
                 function toScreen(clientX, clientY) {
