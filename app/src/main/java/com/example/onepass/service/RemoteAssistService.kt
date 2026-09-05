@@ -89,6 +89,7 @@ class RemoteAssistService : Service() {
     private var captureHandler: Handler? = null
     private var server: RemoteAssistServer? = null
     private val running = AtomicBoolean(false)
+    private var screenWakeLock: android.os.PowerManager.WakeLock? = null
 
     @Volatile
     private var latestJpeg: ByteArray? = null
@@ -117,6 +118,13 @@ class RemoteAssistService : Service() {
                     startForeground(NOTIFICATION_ID, buildNotification())
                 }
                 Logger.d(TAG, "前台服务已启动")
+                // 远程协助期间保持屏幕常亮，避免屏幕休眠导致采集黑帧
+                val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                screenWakeLock = powerManager.newWakeLock(
+                    android.os.PowerManager.SCREEN_DIM_WAKE_LOCK or
+                        android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "RemoteAssist:screen"
+                ).apply { acquire() }
                 // 注意：RESULT_OK 的值为 -1，不能用 -1 作哨兵
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
@@ -141,6 +149,8 @@ class RemoteAssistService : Service() {
     override fun onDestroy() {
         running.set(false)
         isRunning = false
+        runCatching { screenWakeLock?.let { if (it.isHeld) it.release() } }
+        screenWakeLock = null
         runCatching { server?.stop() }
         server = null
         runCatching { virtualDisplay?.release() }
@@ -355,15 +365,17 @@ class RemoteAssistService : Service() {
 
                 override fun send(outputStream: OutputStream) {
                     try {
+                        // 标准 multipart/x-mixed-replace 分帧：
+                        // --frame\r\nContent-Type: image/jpeg\r\nContent-Length: N\r\n\r\n<JPEG>\r\n
                         val boundary = "--frame\r\n".toByteArray()
-                        val headerSuffix = "\r\nContent-Type: image/jpeg\r\n".toByteArray()
+                        val contentTypeHeader = "Content-Type: image/jpeg\r\n".toByteArray()
                         while (true) {
                             val jpeg = service.latestJpeg
                             if (jpeg != null) {
-                                val header = "Content-Length: ${jpeg.size}\r\n\r\n".toByteArray()
+                                val lengthHeader = "Content-Length: ${jpeg.size}\r\n\r\n".toByteArray()
                                 outputStream.write(boundary)
-                                outputStream.write(headerSuffix)
-                                outputStream.write(header)
+                                outputStream.write(contentTypeHeader)
+                                outputStream.write(lengthHeader)
                                 outputStream.write(jpeg)
                                 outputStream.write("\r\n".toByteArray())
                                 outputStream.flush()

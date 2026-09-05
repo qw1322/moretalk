@@ -44,6 +44,8 @@ class RemoteAssistActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 控制页前台时保持屏幕常亮
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         buildContentView()
 
         // 已运行中则直接展示状态，否则请求录屏授权
