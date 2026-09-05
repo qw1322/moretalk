@@ -75,6 +75,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.text.SimpleDateFormat
 import com.nlf.calendar.Solar
 import com.nlf.calendar.Lunar
 import kotlinx.coroutines.withContext
@@ -87,6 +88,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var dateTypeText: TextView
     private lateinit var dateText: TextView
     private lateinit var weekText: TextView
+    private lateinit var timeText: TextView
     private lateinit var weatherText: TextView
     private lateinit var temperatureText: TextView
     private lateinit var weatherDetailText: TextView
@@ -122,6 +124,12 @@ class MainActivity : AppCompatActivity() {
             // 计算到下一个整点的时间
             val delay = getTimeToNextHour()
             handler.postDelayed(this, delay)
+        }
+    }
+    private val timeRunnable = object : Runnable {
+        override fun run() {
+            updateTimeText()
+            handler.postDelayed(this, 30_000)
         }
     }
 
@@ -249,6 +257,8 @@ class MainActivity : AppCompatActivity() {
         
         initViews()
         updateDate()
+        updateTimeText()
+        handler.postDelayed(timeRunnable, 30_000)
         preloadBundledSpeechEngine()
         checkLocationPermissionAndFetchWeather()
         
@@ -263,6 +273,7 @@ class MainActivity : AppCompatActivity() {
         bundledSpeechEngine?.close()
         bundledSpeechEngine = null
         handler.removeCallbacks(refreshRunnable)
+        handler.removeCallbacks(timeRunnable)
         handler.removeCallbacksAndMessages(null)
         if (isTextToSpeechInitialized) {
             textToSpeech.stop()
@@ -561,6 +572,7 @@ class MainActivity : AppCompatActivity() {
         dateTypeText = weatherComponent.findViewById(R.id.dateTypeText)
         dateText = weatherComponent.findViewById(R.id.dateText)
         weekText = weatherComponent.findViewById(R.id.weekText)
+        timeText = weatherComponent.findViewById(R.id.timeText)
         dateTypeText.isSingleLine = true
         dateText.isSingleLine = true
         weekText.isSingleLine = true
@@ -932,6 +944,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 刷新顶部具体时间（每 30 秒一次，分钟级精度）
+     */
+    private fun updateTimeText() {
+        if (!::timeText.isInitialized) return
+        timeText.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+    }
+
     private fun updateDate() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val dateStyle = prefs.getString(KEY_DATE_STYLE, VALUE_SOLAR)
@@ -981,14 +1001,12 @@ class MainActivity : AppCompatActivity() {
         val availableWidth = settingsIcon.left - dateTypeText.left - dpToPx(8f)
         if (availableWidth <= 0) return
 
+        // 第一行只有 类型+日期（星期已移到第二行），仅测量这两项
         val totalTextWidth =
             dateTypeText.paint.measureText(dateTypeText.text.toString()) +
             dateText.paint.measureText(dateText.text.toString()) +
-            weekText.paint.measureText(weekText.text.toString()) +
             dateText.marginStart.toFloat() +
-            dateText.marginEnd.toFloat() +
-            weekText.marginStart.toFloat() +
-            weekText.marginEnd.toFloat()
+            dateText.marginEnd.toFloat()
 
         if (totalTextWidth <= availableWidth) return
 
@@ -996,7 +1014,6 @@ class MainActivity : AppCompatActivity() {
         val adjustedSize = (maxSize * scale).coerceIn(minSize, maxSize)
         dateTypeText.textSize = adjustedSize
         dateText.textSize = adjustedSize
-        weekText.textSize = adjustedSize
     }
 
     private fun dpToPx(dp: Float): Int {
