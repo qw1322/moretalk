@@ -52,6 +52,9 @@ class WeChatMessageReader(context: Context) {
     private val recentSpoken = ArrayDeque<String>()
     private var lastReadTime = 0L
 
+    // 通过窗口状态事件跟踪当前是否在微信聊天页（部分 ROM 上根节点类名是 FrameLayout，不可依赖）
+    private var isOnWeChatChatPage = false
+
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
     private var bundledEngine: BundledSpeechEngine? = null
@@ -88,9 +91,16 @@ class WeChatMessageReader(context: Context) {
         if (WeChatData.index != 0) return
 
         when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                // 跟踪微信当前页面：窗口状态事件携带真实活动类名
+                if (pkg == "com.tencent.mm") {
+                    isOnWeChatChatPage = event.className?.toString()?.contains("ChattingUI") == true
+                    Logger.d("$TAG 窗口状态: ${event.className} isChatPage=$isOnWeChatChatPage")
+                }
+            }
+
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                val className = event.className?.toString() ?: return
-                if (pkg != "com.tencent.mm" || !className.contains("ChattingUI")) return
+                if (pkg != "com.tencent.mm" || !isOnWeChatChatPage) return
                 val now = System.currentTimeMillis()
                 if (now - lastReadTime < READ_THROTTLE_MS) return
                 lastReadTime = now
@@ -104,18 +114,20 @@ class WeChatMessageReader(context: Context) {
             AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                 // 点读：用户点按微信消息时朗读该消息内容（明确意图，不走去重）
                 if (pkg != "com.tencent.mm") return
-                // 点击事件的 className 是被点视图的类名而非活动类名，
-                // 因此用当前活跃窗口的根节点判断是否在聊天页
-                val root = runCatching { rootProvider() }.getOrNull()
-                val onChatPage = root?.className?.toString()?.contains("ChattingUI") == true
                 val source = event.source
-                val speech = if (onChatPage && source != null) {
+                val speech = if (source != null) {
                     resolveMessageSpeech(source)
                 } else {
                     null
                 }
-                root?.recycle()
-                if (!speech.isNullOrBlank()) {
+                // 三种判据任一成立即朗读：
+                // 1) 窗口状态跟踪到聊天页；2) 解析出"发送者 说：内容"消息条目；3) 点击位置在消息区域
+                val isParsedMessage = speech?.contains("说：") == true
+                val inMessageArea = source != null && isInMessageArea(source)
+                Logger.d(
+                    "$TAG VIEW_CLICKED 解析: $speech isChatPage=$isOnWeChatChatPage inArea=$inMessageArea"
+                )
+                if (!speech.isNullOrBlank() && (isOnWeChatChatPage || isParsedMessage || inMessageArea)) {
                     speak(speech)
                 }
             }
@@ -172,6 +184,19 @@ class WeChatMessageReader(context: Context) {
             chain.forEach { it.safeRecycle() }
         }
         return result ?: fallback
+    }
+
+    /**
+     * 消息区域判定：聊天页的标题栏在顶部、输入栏在底部，消息气泡只出现在屏幕中部区域。
+     * 部分 ROM 收不到微信窗口状态事件，用位置作为兜底判据。
+     */
+    private fun isInMessageArea(node: AccessibilityNodeInfo): Boolean {
+        val rect = android.graphics.Rect()
+        node.getBoundsInScreen(rect)
+        if (rect.isEmpty) return false
+        val screenH = appContext.resources.displayMetrics.heightPixels
+        val centerY = (rect.top + rect.bottom) / 2
+        return centerY in 300..(screenH - 300)
     }
 
     private fun collectMessages(
