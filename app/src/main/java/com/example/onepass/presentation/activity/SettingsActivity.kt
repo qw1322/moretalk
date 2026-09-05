@@ -26,6 +26,7 @@ import com.example.onepass.core.config.GlobalScaleManager
 import com.example.onepass.service.BundledSpeechSupport
 import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.SpeechEngineMode
+import com.example.onepass.service.WeChatMessageReader
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -91,6 +92,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var switchFloatingBall: Switch
     private lateinit var textFloatingBallTitle: TextView
     private lateinit var textFloatingBallDesc: TextView
+    private lateinit var switchWechatMsgRead: Switch
+    private lateinit var textWechatMsgReadTitle: TextView
+    private lateinit var textWechatMsgReadDesc: TextView
 
     private val prefs by lazy {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -184,6 +188,9 @@ class SettingsActivity : AppCompatActivity() {
         switchFloatingBall = findViewById(R.id.switchFloatingBall)
         textFloatingBallTitle = findViewById(R.id.textFloatingBallTitle)
         textFloatingBallDesc = findViewById(R.id.textFloatingBallDesc)
+        switchWechatMsgRead = findViewById(R.id.switchWechatMsgRead)
+        textWechatMsgReadTitle = findViewById(R.id.textWechatMsgReadTitle)
+        textWechatMsgReadDesc = findViewById(R.id.textWechatMsgReadDesc)
 
         textDateStyle = findViewById(R.id.textDateStyle)
         textCommonAppsTitle = findViewById(R.id.textCommonAppsTitle)
@@ -230,6 +237,11 @@ class SettingsActivity : AppCompatActivity() {
         switchLowBatteryReminder.isChecked = lowBatteryReminderEnabled
 
         switchFloatingBall.isChecked = prefs.getBoolean(KEY_FLOAT_BALL_ENABLED, true)
+
+        switchWechatMsgRead.isChecked = prefs.getBoolean(
+            WeChatMessageReader.KEY_WECHAT_MSG_READ_ENABLED,
+            false
+        )
 
         when (prefs.getString(KEY_HOME_DETAIL_MODE, VALUE_HOME_DETAIL_BATTERY)) {
             VALUE_HOME_DETAIL_WEATHER -> radioDetailWeather.isChecked = true
@@ -372,6 +384,15 @@ class SettingsActivity : AppCompatActivity() {
                 stopFloatingBallService()
                 Toast.makeText(this, "已关闭桌面悬浮球", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        switchWechatMsgRead.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(WeChatMessageReader.KEY_WECHAT_MSG_READ_ENABLED, isChecked).apply()
+            Toast.makeText(
+                this,
+                if (isChecked) "已开启微信消息点读" else "已关闭微信消息点读",
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
         seekBarBroadcastVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -601,6 +622,7 @@ class SettingsActivity : AppCompatActivity() {
         textSpeechEngineTitle.textSize = scaledTitleSize
         textSpeechRateTitle.textSize = scaledTitleSize
         textFloatingBallTitle.textSize = scaledTitleSize
+        textWechatMsgReadTitle.textSize = scaledTitleSize
 
         radioLunar.textSize = scaledOptionSize
         radioSolar.textSize = scaledOptionSize
@@ -620,6 +642,7 @@ class SettingsActivity : AppCompatActivity() {
         textBroadcastVolumeDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
         textWeatherDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
         textFloatingBallDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
+        textWechatMsgReadDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
 
         btnSetDefaultLauncher.textSize = scaledOptionSize
         btnClearDefaultLauncher.textSize = scaledOptionSize

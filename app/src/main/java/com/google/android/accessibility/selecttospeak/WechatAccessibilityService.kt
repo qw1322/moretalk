@@ -16,6 +16,7 @@ import com.example.onepass.domain.model.WeChatData
 import com.example.onepass.domain.model.WeChatId
 import com.example.onepass.service.AccessibilityNodeHelper.safeRecycle
 import com.example.onepass.service.AccessibilityNodeHelper.safeRecycleAll
+import com.example.onepass.service.WeChatMessageReader
 import com.example.onepass.utils.PerformanceMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,7 +58,13 @@ class SelectToSpeakService : AccessibilityService() {
     // 主动触发下一步的延迟任务
     private var nextStepRunnable: Runnable? = null
 
+    // 微信消息点读
+    private val messageReader by lazy { WeChatMessageReader(this) }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // 微信消息点读：优先处理，不影响拨号自动化（内部有开关与状态保护）
+        runCatching { messageReader.handleEvent(event) { rootInActiveWindow } }
+
         val currentActivity = event?.className?.toString() ?: run {
             Log.d(TAG, "事件为空或className为null")
             return
@@ -878,6 +885,7 @@ class SelectToSpeakService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.d(TAG, "无障碍服务已连接")
+        messageReader.init()
     }
 
     override fun onInterrupt() {
@@ -889,6 +897,7 @@ class SelectToSpeakService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         Log.d(TAG, "无障碍服务已断开")
+        messageReader.shutdown()
         resetAndStop()
         isProcessing.set(false)
         cancelNextStep()
