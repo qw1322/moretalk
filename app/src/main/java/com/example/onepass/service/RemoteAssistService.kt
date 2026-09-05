@@ -419,7 +419,13 @@ class RemoteAssistService : Service() {
               <style>
                 body { margin:0; background:#111; color:#fff; font-family:sans-serif; }
                 #bar { padding:10px; text-align:center; font-size:18px; background:#222; }
-                img { width:100%; height:auto; display:block; }
+                img { width:100%; height:auto; display:block;
+                      touch-action:none; user-select:none; -webkit-user-select:none; }
+                /* 全屏时画面适配视口高度，页面不再滚动，拖拽只用于滑动 */
+                body.fs img { height:100vh; width:100%; object-fit:contain; background:#000; }
+                #fsBtn { position:fixed; top:12px; right:12px; z-index:99;
+                         padding:8px 16px; border:none; border-radius:8px;
+                         background:rgba(0,0,0,.65); color:#fff; font-size:16px; cursor:pointer; }
                 #hint { position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
                         background:rgba(0,0,0,.75); padding:8px 16px; border-radius:8px;
                         font-size:14px; pointer-events:none; max-width:92vw; text-align:center; }
@@ -428,7 +434,24 @@ class RemoteAssistService : Service() {
             <body>
               <div id="bar">MoreTalk 远程协助 · 请保持手机本页与控制页打开，退出会停止服务</div>
               <img id="stream" alt="画面加载中...">
-              <div id="hint">点一下 = 在老人手机上点一下</div>
+              <div id="hint">点一下 = 点击；按住拖动 = 滑动</div>
+              <button id="fsBtn">全屏</button>
+              <script>
+                var fsBtn = document.getElementById('fsBtn');
+                function toggleFS() {
+                  if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                  } else {
+                    document.documentElement.requestFullscreen();
+                  }
+                }
+                fsBtn.addEventListener('click', toggleFS);
+                document.addEventListener('fullscreenchange', function() {
+                  var fs = !!document.fullscreenElement;
+                  document.body.classList.toggle('fs', fs);
+                  fsBtn.textContent = fs ? '退出全屏' : '全屏';
+                });
+              </script>
               <script>
                 var SW = $w, SH = $h;
                 var img = document.getElementById('stream');
