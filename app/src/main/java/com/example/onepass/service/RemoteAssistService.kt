@@ -353,40 +353,34 @@ class RemoteAssistService : Service() {
         }
 
         private fun mjpegResponse(): Response {
-            return object : Response(
+            // NanoHTTPD 标准流式方案：写入管道，newChunkedResponse 负责完整 HTTP 头 + chunked 编码。
+            // （覆写 send() 会丢掉 HTTP 状态行和响应头，导致浏览器无法解析 → 黑屏）
+            val pipeIn = java.io.PipedInputStream(64 * 1024)
+            val pipeOut = java.io.PipedOutputStream(pipeIn)
+            Thread {
+                try {
+                    val boundary = "--frame\r\nContent-Type: image/jpeg\r\n".toByteArray()
+                    while (true) {
+                        val jpeg = service.latestJpeg
+                        if (jpeg != null) {
+                            val lengthHeader = "Content-Length: ${jpeg.size}\r\n\r\n".toByteArray()
+                            pipeOut.write(boundary)
+                            pipeOut.write(lengthHeader)
+                            pipeOut.write(jpeg)
+                            pipeOut.write("\r\n".toByteArray())
+                            pipeOut.flush()
+                        }
+                        Thread.sleep(FRAME_INTERVAL_MS)
+                    }
+                } catch (_: Exception) {
+                    // 客户端断开或管道关闭，结束写线程
+                }
+            }.apply { isDaemon = true }.start()
+            return newChunkedResponse(
                 Response.Status.OK,
                 "multipart/x-mixed-replace; boundary=frame",
-                null,
-                -1L
-            ) {
-                init {
-                    setChunkedTransfer(true)
-                }
-
-                override fun send(outputStream: OutputStream) {
-                    try {
-                        // 标准 multipart/x-mixed-replace 分帧：
-                        // --frame\r\nContent-Type: image/jpeg\r\nContent-Length: N\r\n\r\n<JPEG>\r\n
-                        val boundary = "--frame\r\n".toByteArray()
-                        val contentTypeHeader = "Content-Type: image/jpeg\r\n".toByteArray()
-                        while (true) {
-                            val jpeg = service.latestJpeg
-                            if (jpeg != null) {
-                                val lengthHeader = "Content-Length: ${jpeg.size}\r\n\r\n".toByteArray()
-                                outputStream.write(boundary)
-                                outputStream.write(contentTypeHeader)
-                                outputStream.write(lengthHeader)
-                                outputStream.write(jpeg)
-                                outputStream.write("\r\n".toByteArray())
-                                outputStream.flush()
-                            }
-                            Thread.sleep(FRAME_INTERVAL_MS)
-                        }
-                    } catch (_: Exception) {
-                        // 客户端断开或服务停止
-                    }
-                }
-            }
+                pipeIn
+            )
         }
 
         private fun handleTap(parms: Map<String, String>): Response {
