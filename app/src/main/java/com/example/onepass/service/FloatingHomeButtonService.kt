@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -22,10 +24,24 @@ class FloatingHomeButtonService : Service() {
     companion object {
         private const val BALL_SIZE_DP = 76
         private const val EDGE_MARGIN_DP = 16
+        private const val FADE_DELAY_MS = 20_000L
+        private const val RESTED_ALPHA = 0.4f
+        private const val ACTIVE_ALPHA = 1f
     }
 
     private var windowManager: WindowManager? = null
     private var floatView: ImageView? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 20 秒无点击后淡化为半透明，点击恢复不透明并重新计时
+    private val fadeRunnable = Runnable {
+        floatView?.animate()?.alpha(RESTED_ALPHA)?.setDuration(400)?.start()
+    }
+
+    private fun scheduleFade() {
+        mainHandler.removeCallbacks(fadeRunnable)
+        mainHandler.postDelayed(fadeRunnable, FADE_DELAY_MS)
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -37,6 +53,7 @@ class FloatingHomeButtonService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
         removeFloatingView()
         super.onDestroy()
     }
@@ -73,11 +90,18 @@ class FloatingHomeButtonService : Service() {
             setImageResource(R.drawable.ic_home)
             setBackgroundResource(R.drawable.bg_float_ball)
             contentDescription = "返回桌面"
-            setOnClickListener { goHome() }
+            alpha = ACTIVE_ALPHA
+            setOnClickListener {
+                // 点击：立即恢复不透明，重新计时
+                floatView?.alpha = ACTIVE_ALPHA
+                scheduleFade()
+                goHome()
+            }
         }
         floatView = view
         try {
             wm.addView(view, params)
+            scheduleFade()
         } catch (e: Exception) {
             Logger.w("悬浮球添加失败（可能缺少悬浮窗权限）: ${e.message}")
             floatView = null
