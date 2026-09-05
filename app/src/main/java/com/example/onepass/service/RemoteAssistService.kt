@@ -440,7 +440,7 @@ class RemoteAssistService : Service() {
         } catch (e: Exception) {
             Logger.w("$TAG 轮询异常: ${e.message}")
         }
-        pollHandler?.postDelayed(::pollLoop, 300)
+        pollHandler?.postDelayed(::pollLoop, 150)
     }
 
     private fun uploadFrame(jpeg: ByteArray) {
