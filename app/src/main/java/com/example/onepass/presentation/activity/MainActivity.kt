@@ -1944,7 +1944,26 @@ class MainActivity : AppCompatActivity() {
      */
     private fun handleCommonAppClick(app: CommonApp) {
         if (app.isRemoteAssist) {
-            startActivity(Intent(this, RemoteAssistActivity::class.java))
+            if (RemoteAssistService.isRunning) {
+                // 运行中：展示连接信息，可停止
+                val ip = RemoteAssistService.getLocalIpAddress() ?: "获取IP失败"
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("远程协助运行中")
+                    .setMessage(
+                        "局域网：http://$ip:${RemoteAssistService.PORT}\n" +
+                            "外网房间：${RemoteAssistService.tunnelRoom}\n" +
+                            "外网访问：http://${RemoteAssistService.VPS_HOST}:${RemoteAssistService.VPS_PORT}/?room=${RemoteAssistService.tunnelRoom}\n\n" +
+                            "点击【停止】结束远程协助"
+                    )
+                    .setPositiveButton("停止") { _, _ ->
+                        RemoteAssistService.stop(this)
+                        commonAppsAdapter.notifyDataSetChanged()
+                    }
+                    .setNegativeButton("继续", null)
+                    .show()
+            } else {
+                startActivity(Intent(this, RemoteAssistActivity::class.java))
+            }
             return
         }
         if (!app.isToggle) {

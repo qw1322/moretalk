@@ -3,6 +3,7 @@ package com.example.onepass.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -27,10 +28,18 @@ import com.example.onepass.R
 import com.example.onepass.utils.Logger
 import com.google.android.accessibility.selecttospeak.SelectToSpeakService
 import fi.iki.elonen.NanoHTTPD
+import fi.iki.elonen.NanoWSD
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -44,9 +53,14 @@ class RemoteAssistService : Service() {
     companion object {
         private const val TAG = "RemoteAssist"
         const val ACTION_START = "com.example.onepass.action.REMOTE_ASSIST_START"
+        const val ACTION_STOP = "com.example.onepass.action.REMOTE_ASSIST_STOP"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val PORT = 8890
+        const val WS_PORT = 8891
+        // 公网中继（家属 VPS）：手机隧道主动出站连接，绕过 CGNAT
+        const val VPS_HOST = "216.23.93.14"
+        const val VPS_PORT = 8899
         private const val CHANNEL_ID = "remote_assist"
         private const val NOTIFICATION_ID = 8890
         private const val FRAME_INTERVAL_MS = 100L
@@ -57,6 +71,11 @@ class RemoteAssistService : Service() {
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        /** 公网隧道房间号（家属浏览器经中继访问用） */
+        @Volatile
+        var tunnelRoom: String = "MT${(100000..999999).random()}"
+            internal set
 
         fun start(context: Context, resultCode: Int, resultData: Intent) {
             val intent = Intent(context, RemoteAssistService::class.java).apply {
@@ -94,17 +113,24 @@ class RemoteAssistService : Service() {
     private var screenWakeLock: android.os.PowerManager.WakeLock? = null
 
     @Volatile
-    private var latestJpeg: ByteArray? = null
+    internal var latestJpeg: ByteArray? = null
 
-    private var screenWidth = 0
-    private var screenHeight = 0
+    internal var screenWidth = 0
+    internal var screenHeight = 0
     private var captureWidth = 0
     private var captureHeight = 0
     private var captureDensity = 0
 
     @Volatile
-    private var lastFrameAt = 0L
+    internal var lastFrameAt = 0L
     private var imageArriveCount = 0L
+
+    // WebSocket 控制服务（LAN）与公网隧道
+    private var wsServer: NanoWsdServer? = null
+    private val wsHandler = RemoteAssistWsHandler(this)
+    private var tunnelOkHttp: OkHttpClient? = null
+    private var tunnelWs: okhttp3.WebSocket? = null
+    private val tunnelConnecting = AtomicBoolean(false)
 
     /** UPnP 映射后的公网访问地址（若成功） */
     @Volatile
@@ -135,7 +161,17 @@ class RemoteAssistService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Logger.d(TAG, "onStartCommand action=${intent?.action}")
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_START) {
+            // 防堆积：服务已在运行时的重复启动请求直接忽略，避免重复 setupProjection。
+            // （用户多次点击"远程协助"瓦片/设置按钮时，多次 startForegroundService 会反复进入此分支。）
+            if (running.get() && isRunning) {
+                Logger.d(TAG, "远程协助已在运行，忽略重复启动请求")
+                return START_NOT_STICKY
+            }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(
@@ -181,6 +217,12 @@ class RemoteAssistService : Service() {
         running.set(false)
         isRunning = false
         mainHandler.removeCallbacks(watchdogRunnable)
+        runCatching { wsServer?.stop() }
+        wsServer = null
+        runCatching { tunnelWs?.close(1000, "stop") }
+        tunnelWs = null
+        runCatching { tunnelOkHttp?.dispatcher?.executorService?.shutdown() }
+        tunnelOkHttp = null
         runCatching { screenWakeLock?.let { if (it.isHeld) it.release() } }
         screenWakeLock = null
         runCatching { server?.stop() }
@@ -198,6 +240,11 @@ class RemoteAssistService : Service() {
     }
 
     private fun setupProjection(resultCode: Int, resultData: Intent) {
+        // 防重复初始化：任何二次 setupProjection 都直接返回，避免叠加采集/端口/隧道
+        if (running.get()) {
+            Logger.w(TAG, "setupProjection 已被调用，忽略重复初始化")
+            return
+        }
         try {
             val metrics = DisplayMetrics()
             val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -248,6 +295,10 @@ class RemoteAssistService : Service() {
                     stopSelf()
                 }
             Logger.d(TAG, "HTTP 服务已启动 :$PORT")
+            // WebSocket 控制服务（LAN 页面 + 控制）
+            startWsServer()
+            // 公网隧道（主动出站连接 VPS 中继）
+            startTunnel()
             // 尝试 UPnP 端口映射（NAT 外网直连）
             val localIp = getLocalIpAddress()
             if (localIp != null) {
@@ -313,6 +364,85 @@ class RemoteAssistService : Service() {
         Logger.d(TAG, "虚拟显示已重建 ${width}x$height")
     }
 
+    // ==================== WebSocket 控制（LAN + 公网隧道） ====================
+
+    private fun startWsServer() {
+        wsServer = NanoWsdServer(this, wsHandler)
+        runCatching { wsServer?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false) }
+            .onFailure { e -> Logger.e(TAG, "WS 服务启动失败: ${e.message}") }
+        Logger.d(TAG, "WS 控制服务已启动 :$WS_PORT，房间 $tunnelRoom")
+    }
+
+    private fun startTunnel() {
+        if (tunnelConnecting.get() || tunnelWs != null) return
+        tunnelConnecting.set(true)
+        try {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .pingInterval(20, TimeUnit.SECONDS)
+                .build()
+            tunnelOkHttp = client
+            val req = Request.Builder()
+                .url("ws://$VPS_HOST:$VPS_PORT/tunnel?room=$tunnelRoom")
+                .build()
+            tunnelWs = client.newWebSocket(req, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    tunnelConnecting.set(false)
+                    Logger.d(TAG, "公网隧道已连接，房间 $tunnelRoom")
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    Logger.d(TAG, "隧道收到: ${text.take(80)}")
+                    wsHandler.handle(object : RemoteAssistWsHandler.WsSink {
+                        override fun sendText(t: String) {
+                            Logger.d(TAG, "隧道回文本: ${t.take(80)}")
+                            runCatching { webSocket.send(t) }
+                                .onFailure { Logger.e(TAG, "隧道发文本失败: ${it.message}") }
+                        }
+
+                        override fun sendBinary(bytes: ByteArray) {
+                            Logger.d(TAG, "隧道回二进制: ${bytes.size}B")
+                            runCatching { webSocket.send(okio.ByteString.of(*bytes)) }
+                                .onFailure { Logger.e(TAG, "隧道发二进制失败: ${it.message}") }
+                        }
+                    }, text)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    tunnelWs = null
+                    tunnelConnecting.set(false)
+                    scheduleTunnelReconnect()
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    Logger.w("$TAG 隧道断开: ${t.message}")
+                    tunnelWs = null
+                    tunnelConnecting.set(false)
+                    scheduleTunnelReconnect()
+                }
+            })
+        } catch (e: Exception) {
+            tunnelConnecting.set(false)
+            Logger.e(TAG, "隧道启动失败: ${e.message}")
+            scheduleTunnelReconnect()
+        }
+    }
+
+    private fun okHttpSink(ws: WebSocket) = object : RemoteAssistWsHandler.WsSink {
+        override fun sendText(text: String) {
+            runCatching { ws.send(text) }
+        }
+
+        override fun sendBinary(bytes: ByteArray) {
+            runCatching { ws.send(okio.ByteString.of(*bytes)) }
+        }
+    }
+
+    private fun scheduleTunnelReconnect() {
+        mainHandler.postDelayed({ startTunnel() }, 5000)
+    }
+
     private fun imageToJpeg(image: Image, quality: Int): ByteArray? {
         val t0 = System.currentTimeMillis()
         val plane = image.planes[0]
@@ -354,12 +484,17 @@ class RemoteAssistService : Service() {
 
     private fun buildNotification(): Notification {
         val ip = getLocalIpAddress() ?: "获取IP失败"
-        val text = "远程协助运行中：http://$ip:$PORT"
+        val text = "局域网 http://$ip:$PORT · 外网房间 $tunnelRoom"
+        val stopIntent = Intent(this, RemoteAssistService::class.java).setAction(ACTION_STOP)
+        val stopPending = PendingIntent.getService(
+            this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE
+        )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("远程协助（测试）")
+            .setContentTitle("远程协助运行中")
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_home)
             .setOngoing(true)
+            .addAction(0, "停止", stopPending)
             .build()
     }
 
@@ -605,6 +740,125 @@ class RemoteAssistService : Service() {
                 "text/plain",
                 if (injected) "ok" else "accessibility service not ready"
             )
+        }
+    }
+
+    /**
+     * LAN 控制服务：控制页 + /ws 指令端点（NanoWSD）
+     */
+    private class NanoWsdServer(
+        private val service: RemoteAssistService,
+        private val handler: RemoteAssistWsHandler
+    ) : NanoWSD(WS_PORT) {
+
+        override fun serve(session: IHTTPSession): Response {
+            if (session.method == Method.GET && (session.uri == "/" || session.uri == "/index.html")) {
+                return newFixedLengthResponse(
+                    Response.Status.OK,
+                    "text/html; charset=utf-8",
+                    buildControlPage()
+                )
+            }
+            return super.serve(session)
+        }
+
+        override fun openWebSocket(handshake: IHTTPSession): WebSocket {
+            return object : WebSocket(handshake) {
+                override fun onOpen() {}
+
+                override fun onClose(code: WebSocketFrame.CloseCode, reason: String, byRemote: Boolean) {}
+
+                override fun onMessage(frame: WebSocketFrame) {
+                    // 文本帧：浏览器指令（getTextPayload 对二进制帧可能抛异常，容错）
+                    val text = runCatching { frame.textPayload }.getOrNull()
+                    if (!text.isNullOrEmpty()) {
+                        handler.handle(object : RemoteAssistWsHandler.WsSink {
+                            override fun sendText(text: String) {
+                                runCatching { send(text) }
+                            }
+
+                            override fun sendBinary(bytes: ByteArray) {
+                                runCatching { send(bytes) }
+                            }
+                        }, text)
+                    }
+                }
+
+                override fun onPong(pong: WebSocketFrame) {}
+
+                override fun onException(e: IOException) {}
+            }
+        }
+
+        private fun buildControlPage(): String {
+            val room = RemoteAssistService.tunnelRoom
+            val wanUrl = "http://${VPS_HOST}:${VPS_PORT}/?room=$room"
+            return """<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>远程协助 - MoreTalk</title><style>
+body{margin:0;background:#111;color:#fff;font-family:sans-serif}
+#bar{padding:10px;text-align:center;font-size:18px;background:#222}
+img{width:100%;height:auto;display:block;touch-action:none;user-select:none;-webkit-user-select:none}
+body.fs img{height:100vh;width:100%;object-fit:contain;background:#000}
+#fsBtn{position:fixed;top:12px;right:12px;z-index:99;padding:8px 16px;border:none;border-radius:8px;background:rgba(0,0,0,.65);color:#fff;font-size:16px;cursor:pointer}
+#hint{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);padding:8px 16px;border-radius:8px;font-size:14px;pointer-events:none;max-width:92vw;text-align:center}
+</style></head><body>
+<div id="bar">MoreTalk 远程协助 · 房间 $room · 外网访问：$wanUrl</div>
+<img id="stream" alt="画面加载中...">
+<div id="hint">正在连接…</div><button id="fsBtn">全屏</button>
+<script>
+var ROOM = '$room';
+var WSURL = (location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws?room=' + ROOM;
+var img = document.getElementById('stream');
+var hint = document.getElementById('hint');
+var SW=0, SH=0, downX=0, downY=0, dragging=false, active=false, lastUrl=null;
+
+function connect() {
+  var ws = new WebSocket(WSURL);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = function(){ hint.textContent='已连接，等待画面…'; ws.send(JSON.stringify({op:'status'})); };
+  ws.onclose = function(){ hint.textContent='连接断开，3秒后重连…'; setTimeout(connect, 3000); };
+  ws.onerror = function(){ ws.close(); };
+  ws.onmessage = function(ev){
+    if (typeof ev.data === 'string') {
+      var m = JSON.parse(ev.data);
+      if (m.op === 'status') { SW=m.w; SH=m.h; hint.textContent='已连接 · '+SW+'x'+SH+'（点=点击，拖=滑动）'; reqFrame(ws); }
+    } else {
+      var dv = new DataView(ev.data);
+      var age = dv.getUint32(0);
+      var blob = new Blob([ev.data.slice(4)]);
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+      lastUrl = URL.createObjectURL(blob);
+      img.src = lastUrl;
+      hint.textContent = '画面延迟约 ' + age + 'ms（点=点击，拖=滑动）';
+      reqFrame(ws);
+    }
+  };
+  window._ws = ws;
+}
+function reqFrame(ws){ if (ws.readyState===1) ws.send(JSON.stringify({op:'frame'})); }
+function send(obj){ var ws=window._ws; if(ws && ws.readyState===1) ws.send(JSON.stringify(obj)); }
+function toScreen(cx,cy){ var r=img.getBoundingClientRect(); return {x:Math.round((cx-r.left)*SW/r.width), y:Math.round((cy-r.top)*SH/r.height)}; }
+function beginDrag(cx,cy){ downX=cx; downY=cy; dragging=false; active=true; }
+function moveDrag(cx,cy){ if(!active)return; if(Math.abs(cx-downX)+Math.abs(cy-downY)>12) dragging=true; }
+function endDrag(cx,cy){
+  if(!active){active=false;return;} active=false;
+  var s=toScreen(downX,downY), e=toScreen(cx,cy);
+  if(dragging){ send({op:'swipe',x1:s.x,y1:s.y,x2:e.x,y2:e.y}); hint.textContent='已滑动 ('+s.x+','+s.y+') → ('+e.x+','+e.y+')'; }
+  else { send({op:'tap',x:s.x,y:s.y}); hint.textContent='已点击 ('+s.x+', '+s.y+')'; }
+}
+img.addEventListener('mousedown',function(e){beginDrag(e.clientX,e.clientY);});
+img.addEventListener('mousemove',function(e){moveDrag(e.clientX,e.clientY);});
+img.addEventListener('mouseup',function(e){endDrag(e.clientX,e.clientY);});
+img.addEventListener('mouseleave',function(e){if(active)endDrag(e.clientX,e.clientY);});
+img.addEventListener('touchstart',function(e){var t=e.touches[0];beginDrag(t.clientX,t.clientY);},{passive:true});
+img.addEventListener('touchmove',function(e){var t=e.touches[0];moveDrag(t.clientX,t.clientY);},{passive:false});
+img.addEventListener('touchend',function(e){var t=e.changedTouches[0];endDrag(t.clientX,t.clientY);});
+document.getElementById('fsBtn').addEventListener('click',function(){ if(document.fullscreenElement){document.exitFullscreen();} else {document.documentElement.requestFullscreen();} });
+document.addEventListener('fullscreenchange',function(){var fs=!!document.fullscreenElement;document.body.classList.toggle('fs',fs);document.getElementById('fsBtn').textContent=fs?'退出全屏':'全屏';});
+connect();
+</script></body></html>"""
         }
     }
 }

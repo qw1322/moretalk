@@ -97,6 +97,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var textWechatMsgReadTitle: TextView
     private lateinit var textWechatMsgReadDesc: TextView
 
+    private lateinit var textRemoteAssistStatus: TextView
+    private lateinit var btnStopRemoteAssist: Button
+
     private val prefs by lazy {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
@@ -126,6 +129,7 @@ class SettingsActivity : AppCompatActivity() {
         val scalePercentage = GlobalScaleManager.getScalePercentage(this)
         applyScaleEffects(scalePercentage)
         syncFloatingBallService()
+        updateRemoteAssistStatus()
     }
 
     /**
@@ -193,6 +197,9 @@ class SettingsActivity : AppCompatActivity() {
         switchWechatMsgRead = findViewById(R.id.switchWechatMsgRead)
         textWechatMsgReadTitle = findViewById(R.id.textWechatMsgReadTitle)
         textWechatMsgReadDesc = findViewById(R.id.textWechatMsgReadDesc)
+
+        textRemoteAssistStatus = findViewById(R.id.textRemoteAssistStatus)
+        btnStopRemoteAssist = findViewById(R.id.btnStopRemoteAssist)
 
         textDateStyle = findViewById(R.id.textDateStyle)
         textCommonAppsTitle = findViewById(R.id.textCommonAppsTitle)
@@ -330,6 +337,16 @@ class SettingsActivity : AppCompatActivity() {
 
         btnRemoteAssist.setOnClickListener {
             startActivity(Intent(this, RemoteAssistActivity::class.java))
+        }
+
+        btnStopRemoteAssist.setOnClickListener {
+            if (com.example.onepass.service.RemoteAssistService.isRunning) {
+                com.example.onepass.service.RemoteAssistService.stop(this)
+                Toast.makeText(this, "已停止远程协助并清理资源", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(this, "远程协助当前未运行，无需停止", Toast.LENGTH_SHORT).show()
+            }
+            updateRemoteAssistStatus()
         }
 
         btnContacts.setOnClickListener {
@@ -524,6 +541,24 @@ class SettingsActivity : AppCompatActivity() {
         return resolveInfo.activityInfo?.packageName == packageName
     }
 
+    /**
+     * 刷新远程协助运行状态显示（是否运行、房间号）
+     */
+    private fun updateRemoteAssistStatus() {
+        val running = com.example.onepass.service.RemoteAssistService.isRunning
+        textRemoteAssistStatus.text = if (running) {
+            "运行中 · 房间 ${com.example.onepass.service.RemoteAssistService.tunnelRoom}\n" +
+                "外网访问：http://" +
+                com.example.onepass.service.RemoteAssistService.VPS_HOST + ":" +
+                com.example.onepass.service.RemoteAssistService.VPS_PORT + "/?room=" +
+                com.example.onepass.service.RemoteAssistService.tunnelRoom
+        } else {
+            "未运行"
+        }
+        btnStopRemoteAssist.isEnabled = running
+        btnStopRemoteAssist.alpha = if (running) 1f else 0.6f
+    }
+
     private fun loadCommonApps(commonAppsSet: Set<String>?) {
         commonAppsContainer.removeAllViews()
 
@@ -655,6 +690,8 @@ class SettingsActivity : AppCompatActivity() {
         btnCommonApps.textSize = scaledButtonSize
         btnContacts.textSize = scaledButtonSize
         btnRemoteAssist.textSize = scaledButtonSize
+        btnStopRemoteAssist.textSize = scaledButtonSize
+        textRemoteAssistStatus.textSize = GlobalScaleManager.getScaledValue(this, 20f)
         // 语速显示固定大小，不随图标缩放变化。
         textSpeechRate.textSize = 24f
     }
