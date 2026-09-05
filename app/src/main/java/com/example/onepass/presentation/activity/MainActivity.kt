@@ -57,6 +57,7 @@ import com.example.onepass.service.BundledSpeechEngine
 import com.example.onepass.service.BundledSpeechSupport
 import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.SpeechEngineMode
+import com.example.onepass.service.WeChatMessageReader
 import com.example.onepass.utils.PerformanceMonitor
 
 import kotlinx.coroutines.CoroutineScope
@@ -194,6 +195,7 @@ class MainActivity : AppCompatActivity() {
 
     // 快捷功能相关
     private val KEY_FLOAT_BALL_ENABLED = "float_ball_enabled"
+    private val TOGGLE_WECHAT_READ_ID = "__wechat_read__"
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -577,9 +579,7 @@ class MainActivity : AppCompatActivity() {
         
         // 设置常用应用RecyclerView
         val initialCommonAppIconSize = getCommonAppIconSize()
-        commonAppsAdapter = CommonAppAdapter(commonApps, { packageName ->
-            launchApp(packageName)
-        }, initialCommonAppIconSize)
+        commonAppsAdapter = CommonAppAdapter(commonApps, ::handleCommonAppClick, initialCommonAppIconSize)
         recyclerViewCommonApps.adapter = commonAppsAdapter
         recyclerViewCommonApps.isNestedScrollingEnabled = false
         
@@ -1827,29 +1827,14 @@ class MainActivity : AppCompatActivity() {
         // 清空常用应用列表
         commonApps.clear()
         
-        if (savedApps.isEmpty()) {
-            Log.d(TAG, "没有保存的常用应用，隐藏常用应用卡片")
-            commonAppsCard.visibility = View.GONE
-            val layoutParams = contactsCard.layoutParams as LinearLayout.LayoutParams
-            layoutParams.topMargin = (16 * resources.displayMetrics.density).toInt()
-            contactsCard.layoutParams = layoutParams
-            commonApps.clear()
-            commonAppsAdapter = CommonAppAdapter(commonApps, { packageName ->
-                launchApp(packageName)
-            }, iconSize)
-            recyclerViewCommonApps.adapter = commonAppsAdapter
-            return
-        }
-        
-        // 显示常用应用卡片
+        // 显示常用应用卡片（至少包含「微信点读」开关瓦片）
         commonAppsCard.visibility = View.VISIBLE
         val layoutParams = contactsCard.layoutParams as LinearLayout.LayoutParams
         layoutParams.topMargin = 0
         contactsCard.layoutParams = layoutParams
         
         // 按排序值对应用进行排序
-        val sortedApps = savedApps.sortedWith(Comparator {
-                app1, app2 ->
+        val sortedApps = savedApps.sortedWith(Comparator { app1, app2 ->
             val order1 = appOrders[app1] ?: Int.MAX_VALUE
             val order2 = appOrders[app2] ?: Int.MAX_VALUE
             order1.compareTo(order2)
@@ -1859,6 +1844,8 @@ class MainActivity : AppCompatActivity() {
         
         // 加载应用信息
         for (packageName in sortedApps) {
+            // 开关瓦片由下方固定追加，跳过历史残留
+            if (packageName == TOGGLE_WECHAT_READ_ID) continue
             try {
                 val appName: String
                 val appIcon: Drawable
@@ -1883,13 +1870,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        // 创建新的适配器，传入缓存的iconSizeValue
-        commonAppsAdapter = CommonAppAdapter(commonApps, { packageName ->
-            launchApp(packageName)
-        }, iconSize)
+        // 固定追加「微信点读」开关瓦片
+        appendWechatReadTile()
+        
+        // 创建新的适配器
+        commonAppsAdapter = CommonAppAdapter(commonApps, ::handleCommonAppClick, iconSize)
         recyclerViewCommonApps.adapter = commonAppsAdapter
         
-        // 根据真实图标尺寸动态计算列数，避免 8 个应用时列数估算过于乐观导致拥挤
+        // 根据真实图标尺寸动态计算列数，避免应用较多时列数估算过于乐观导致拥挤
         recyclerViewCommonApps.post {
             val recyclerViewWidth = recyclerViewCommonApps.width
             val horizontalSpace = (40 * resources.displayMetrics.density).toInt()
@@ -1900,6 +1888,39 @@ class MainActivity : AppCompatActivity() {
         }
         
         Log.d(TAG, "常用应用加载完成")
+    }
+
+    /**
+     * 固定追加「微信点读」开关瓦片（显示开/关状态，点击切换）
+     */
+    private fun appendWechatReadTile() {
+        val enabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(WeChatMessageReader.KEY_WECHAT_MSG_READ_ENABLED, false)
+        val icon = ContextCompat.getDrawable(this, R.drawable.ic_wechat_read) ?: return
+        commonApps.add(
+            CommonApp(TOGGLE_WECHAT_READ_ID, "微信点读", icon, isToggle = true, toggleOn = enabled)
+        )
+    }
+
+    /**
+     * 常用应用点击：开关瓦片切换点读状态，其余启动应用
+     */
+    private fun handleCommonAppClick(app: CommonApp) {
+        if (!app.isToggle) {
+            launchApp(app.packageName)
+            return
+        }
+        val newState = !app.toggleOn
+        if (newState && !isAccessibilityServiceEnabled()) {
+            Toast.makeText(this, "请先开启无障碍服务，微信点读才能生效", Toast.LENGTH_LONG).show()
+        }
+        app.toggleOn = newState
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(WeChatMessageReader.KEY_WECHAT_MSG_READ_ENABLED, newState)
+            .apply()
+        commonAppsAdapter.notifyDataSetChanged()
+        Toast.makeText(this, if (newState) "已开启微信点读" else "已关闭微信点读", Toast.LENGTH_SHORT).show()
     }
 
     /**
@@ -1914,43 +1935,66 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
-data class CommonApp(val packageName: String, val appName: String, val appIcon: Drawable)
+data class CommonApp(
+    val packageName: String,
+    val appName: String,
+    val appIcon: Drawable,
+    val isToggle: Boolean = false,
+    var toggleOn: Boolean = false
+)
 
 class CommonAppAdapter(
-    private val apps: List<CommonApp>, 
-    private val listener: (String) -> Unit,
+    private val apps: List<CommonApp>,
+    private val listener: (CommonApp) -> Unit,
     private val iconSize: Int
 ) : RecyclerView.Adapter<CommonAppAdapter.ViewHolder>() {
-    
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context).inflate(R.layout.item_common_app, parent, false)
         return ViewHolder(view)
     }
-    
+
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val app = apps[position]
         holder.bind(app, listener, iconSize)
     }
-    
+
     override fun getItemCount(): Int = apps.size
-    
+
     class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val iconView: ImageView = itemView.findViewById(R.id.appIcon)
         private val nameView: TextView = itemView.findViewById(R.id.appName)
-        
-        fun bind(app: CommonApp, listener: (String) -> Unit, iconSize: Int) {
+
+        fun bind(app: CommonApp, listener: (CommonApp) -> Unit, iconSize: Int) {
             iconView.setImageDrawable(app.appIcon)
             nameView.text = app.appName
-            
+
+            if (app.isToggle) {
+                // 开关瓦片：绿色=开，灰色=关，名称带状态
+                nameView.text = if (app.toggleOn) "微信点读（开）" else "微信点读（关）"
+                nameView.setTextColor(
+                    ContextCompat.getColor(
+                        itemView.context,
+                        if (app.toggleOn) R.color.toggle_on_text else R.color.toggle_off_text
+                    )
+                )
+                iconView.setBackgroundResource(
+                    if (app.toggleOn) R.drawable.bg_toggle_on else R.drawable.bg_toggle_off
+                )
+            } else {
+                nameView.setTextColor(ContextCompat.getColor(itemView.context, android.R.color.black))
+                iconView.background = null
+            }
+
             val iconParams = iconView.layoutParams
             iconParams.width = iconSize
             iconParams.height = iconSize
             iconView.layoutParams = iconParams
-            
+
             nameView.textSize = iconSize / 10f
-            
+
             itemView.setOnClickListener {
-                listener(app.packageName)
+                listener(app)
             }
         }
     }

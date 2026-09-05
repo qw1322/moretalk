@@ -9,6 +9,7 @@ import android.speech.tts.TextToSpeech
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.onepass.domain.model.WeChatData
+import com.example.onepass.service.AccessibilityNodeHelper.safeRecycle
 import com.example.onepass.utils.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -100,6 +101,25 @@ class WeChatMessageReader(context: Context) {
                 speakNewMessages(messages)
             }
 
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                // 点读：用户点按微信消息时朗读该消息内容（明确意图，不走去重）
+                if (pkg != "com.tencent.mm") return
+                // 点击事件的 className 是被点视图的类名而非活动类名，
+                // 因此用当前活跃窗口的根节点判断是否在聊天页
+                val root = runCatching { rootProvider() }.getOrNull()
+                val onChatPage = root?.className?.toString()?.contains("ChattingUI") == true
+                val source = event.source
+                val speech = if (onChatPage && source != null) {
+                    resolveMessageSpeech(source)
+                } else {
+                    null
+                }
+                root?.recycle()
+                if (!speech.isNullOrBlank()) {
+                    speak(speech)
+                }
+            }
+
             AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> {
                 if (pkg != "com.tencent.mm") return
                 val notification = event.parcelableData as? Notification ?: return
@@ -114,6 +134,44 @@ class WeChatMessageReader(context: Context) {
                 speak("微信来新消息，$summary")
             }
         }
+    }
+
+    /**
+     * 从被点击节点解析可播报内容：
+     * 1) 沿父链找消息条目的 contentDescription（"发送者 说：内容"）；
+     * 2) 找不到消息条目时，退回最深一层节点的文本（即消息内容本身）。
+     * 遍历中获取的节点统一回收。
+     */
+    private fun resolveMessageSpeech(node: AccessibilityNodeInfo): String? {
+        val chain = mutableListOf<AccessibilityNodeInfo>()
+        var fallback: String? = null
+        var result: String? = null
+        try {
+            var current: AccessibilityNodeInfo? = node
+            var depth = 0
+            while (current != null && depth < 6) {
+                chain.add(current)
+                val desc = current.contentDescription?.toString()?.trim()
+                if (!desc.isNullOrEmpty()) {
+                    val parsed = parseMessage(desc)
+                    if (parsed != null) {
+                        result = "${parsed.first}说：${parsed.second}"
+                        break
+                    }
+                }
+                if (fallback == null) {
+                    val text = current.text?.toString()?.trim()
+                    if (!text.isNullOrEmpty() && text.length < 200) {
+                        fallback = text
+                    }
+                }
+                current = current.parent
+                depth++
+            }
+        } finally {
+            chain.forEach { it.safeRecycle() }
+        }
+        return result ?: fallback
     }
 
     private fun collectMessages(

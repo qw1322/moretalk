@@ -51,4 +51,8 @@
     
     <!-- 应用选中背景色 -->
     <color name="app_selected_bg">#E0E7FF</color>
+
+    <!-- 开关瓦片状态文字 -->
+    <color name="toggle_on_text">#047857</color>
+    <color name="toggle_off_text">#9CA3AF</color>
 </resources>

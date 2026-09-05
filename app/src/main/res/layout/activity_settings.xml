@@ -297,7 +297,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="开启后，收到微信新消息会自动语音播报发送者和内容（需开启无障碍服务；默认关闭，隐私优先）。"
+                    android:text="开启后，在微信里点按消息会朗读内容，新消息到达也会自动播报（需开启无障碍服务；默认关闭，隐私优先）。"
                     android:textColor="#999999"
                     android:textSize="16sp" />
             </LinearLayout>
