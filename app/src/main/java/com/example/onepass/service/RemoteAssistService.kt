@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
@@ -50,7 +51,8 @@ class RemoteAssistService : Service() {
         private const val NOTIFICATION_ID = 8890
         private const val FRAME_INTERVAL_MS = 150L
         private const val JPEG_QUALITY = 60
-        private const val CAPTURE_SCALE = 0.4f
+        // 全分辨率采集：部分 ROM 对缩放的虚拟显示（尺寸与密度不匹配）镜像失效
+        private const val CAPTURE_SCALE = 1.0f
 
         @Volatile
         var isRunning: Boolean = false
@@ -96,6 +98,29 @@ class RemoteAssistService : Service() {
 
     private var screenWidth = 0
     private var screenHeight = 0
+    private var captureWidth = 0
+    private var captureHeight = 0
+    private var captureDensity = 0
+
+    @Volatile
+    private var lastFrameAt = 0L
+    private var imageArriveCount = 0L
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 看门狗：本 ROM 每个虚拟显示仅产 1 帧，停滞 2 秒即重建以持续供帧
+    private val watchdogRunnable = object : Runnable {
+        override fun run() {
+            if (running.get() && mediaProjection != null) {
+                val stall = System.currentTimeMillis() - lastFrameAt
+                if (stall > 2000) {
+                    Logger.w(TAG, "采集停滞 ${stall}ms，重建虚拟显示")
+                    runCatching { createCapture(captureWidth, captureHeight, captureDensity) }
+                }
+            }
+            mainHandler.postDelayed(this, 1000)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -118,13 +143,15 @@ class RemoteAssistService : Service() {
                     startForeground(NOTIFICATION_ID, buildNotification())
                 }
                 Logger.d(TAG, "前台服务已启动")
-                // 远程协助期间保持屏幕常亮，避免屏幕休眠导致采集黑帧
-                val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-                screenWakeLock = powerManager.newWakeLock(
-                    android.os.PowerManager.SCREEN_DIM_WAKE_LOCK or
-                        android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                    "RemoteAssist:screen"
-                ).apply { acquire() }
+                // 远程协助期间保持屏幕常亮，避免屏幕休眠/锁定导致镜像采集中断
+                runCatching {
+                    val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                    screenWakeLock = powerManager.newWakeLock(
+                        android.os.PowerManager.FULL_WAKE_LOCK or
+                            android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "RemoteAssist:screen"
+                    ).apply { acquire() }
+                }
                 // 注意：RESULT_OK 的值为 -1，不能用 -1 作哨兵
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
@@ -149,6 +176,7 @@ class RemoteAssistService : Service() {
     override fun onDestroy() {
         running.set(false)
         isRunning = false
+        mainHandler.removeCallbacks(watchdogRunnable)
         runCatching { screenWakeLock?.let { if (it.isHeld) it.release() } }
         screenWakeLock = null
         runCatching { server?.stop() }
@@ -186,40 +214,29 @@ class RemoteAssistService : Service() {
             }
             mediaProjection = projection
             Logger.d(TAG, "MediaProjection 已获取")
+            // 监听系统对投影会话的干预（onStop = 系统强制停止投影）
+            projection.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    Logger.w(TAG, "系统调用 MediaProjection.onStop —— 投影被系统停止")
+                }
 
-            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-            captureThread = HandlerThread("RemoteAssistCapture").apply { start() }
-            captureHandler = Handler(captureThread!!.looper)
-            var lastFrameAt = 0L
-            imageReader?.setOnImageAvailableListener({ reader ->
-                if (!running.get()) return@setOnImageAvailableListener
-                val now = System.currentTimeMillis()
-                if (now - lastFrameAt < FRAME_INTERVAL_MS) return@setOnImageAvailableListener
-                lastFrameAt = now
-                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                runCatching {
-                    val jpeg = imageToJpeg(image, JPEG_QUALITY)
-                    if (jpeg != null && jpeg.isNotEmpty()) {
-                        latestJpeg = jpeg
-                    }
-                }.onFailure { e -> Logger.w("$TAG 帧处理失败: ${e.message}") }
-                image.close()
-            }, captureHandler)
+                override fun onCapturedContentResize(width: Int, height: Int) {
+                    Logger.d(TAG, "投影内容尺寸变化 ${width}x$height")
+                }
 
-            virtualDisplay = projection.createVirtualDisplay(
-                "RemoteAssistDisplay",
-                width,
-                height,
-                metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface,
-                null,
-                null
-            )
-            Logger.d(TAG, "虚拟显示已创建 ${width}x$height")
+                override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+                    Logger.d(TAG, "投影内容可见性变化 isVisible=$isVisible")
+                }
+            }, mainHandler)
+            captureWidth = width
+            captureHeight = height
+            captureDensity = metrics.densityDpi
 
+            // 必须先置 running 再建采集：首帧可能在 running=false 时到达而被丢弃
             running.set(true)
             isRunning = true
+            createCapture(width, height, metrics.densityDpi)
+
             server = RemoteAssistServer(PORT, this)
             runCatching { server?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false) }
                 .onFailure { e ->
@@ -227,18 +244,71 @@ class RemoteAssistService : Service() {
                     stopSelf()
                 }
             Logger.d(TAG, "HTTP 服务已启动 :$PORT")
+            mainHandler.postDelayed(watchdogRunnable, 3000)
         } catch (e: Exception) {
             Logger.e(TAG, "setupProjection 异常: ${e.message}", e)
             stopSelf()
         }
     }
 
+    /**
+     * 创建/重建采集链路（ImageReader + 虚拟显示）。可反复调用以自愈采集停滞。
+     */
+    private fun createCapture(width: Int, height: Int, densityDpi: Int) {
+        runCatching { imageReader?.close() }
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        captureThread?.quitSafely()
+        captureThread = HandlerThread("RemoteAssistCapture").apply { start() }
+        captureHandler = Handler(captureThread!!.looper)
+        imageReader?.setOnImageAvailableListener({ reader ->
+            imageArriveCount++
+            if (imageArriveCount <= 5) {
+                Logger.d(TAG, "图像到达 #$imageArriveCount")
+            }
+            if (!running.get()) return@setOnImageAvailableListener
+            val now = System.currentTimeMillis()
+            if (now - lastFrameAt < FRAME_INTERVAL_MS) return@setOnImageAvailableListener
+            lastFrameAt = now
+            val image = reader.acquireLatestImage()
+            if (image == null) {
+                if (imageArriveCount <= 5) Logger.w(TAG, "acquireLatestImage 返回 null")
+                return@setOnImageAvailableListener
+            }
+            runCatching {
+                val jpeg = imageToJpeg(image, JPEG_QUALITY)
+                if (jpeg != null && jpeg.isNotEmpty()) {
+                    latestJpeg = jpeg
+                    if (imageArriveCount <= 5) Logger.d(TAG, "JPEG 帧 ${jpeg.size}B")
+                } else {
+                    if (imageArriveCount <= 5) Logger.w(TAG, "JPEG 为空，原始尺寸 ${image.width}x${image.height}")
+                }
+            }.onFailure { e -> Logger.w("$TAG 帧处理失败: ${e.message}") }
+            image.close()
+        }, captureHandler)
+
+        runCatching { virtualDisplay?.release() }
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "RemoteAssistDisplay",
+            width,
+            height,
+            densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader?.surface,
+            null,
+            null
+        )
+        // 注意：不要在这里初始化 lastFrameAt！首帧可能与节流时间戳撞车被丢弃
+        Logger.d(TAG, "虚拟显示已重建 ${width}x$height")
+    }
+
     private fun imageToJpeg(image: Image, quality: Int): ByteArray? {
+        val t0 = System.currentTimeMillis()
         val plane = image.planes[0]
         val buffer = plane.buffer
         val pixelStride = plane.pixelStride
         val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * image.width
+        Logger.d(TAG, "imageToJpeg 开始 ${image.width}x${image.height} bufferRemaining=${buffer.remaining()}")
         val bitmap = Bitmap.createBitmap(
             image.width + rowPadding / pixelStride,
             image.height,
@@ -247,9 +317,15 @@ class RemoteAssistService : Service() {
         bitmap.copyPixelsFromBuffer(buffer)
         val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
         val baos = ByteArrayOutputStream()
-        cropped.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+        val ok = cropped.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+        val t1 = System.currentTimeMillis()
+        Logger.d(TAG, "imageToJpeg 完成 ok=$ok size=${baos.size()} 耗时${t1 - t0}ms")
         bitmap.recycle()
         cropped.recycle()
+        if (!ok) {
+            Logger.w(TAG, "JPEG 压缩失败（返回 false）")
+            return null
+        }
         return baos.toByteArray()
     }
 
@@ -348,7 +424,7 @@ class RemoteAssistService : Service() {
               </style>
             </head>
             <body>
-              <div id="bar">MoreTalk 远程协助（点击画面即可远程操作）</div>
+              <div id="bar">MoreTalk 远程协助 · 请保持手机本页与控制页打开，退出会停止服务</div>
               <img id="stream" alt="画面加载中...">
               <div id="hint">点一下 = 在老人手机上点一下</div>
               <script>
