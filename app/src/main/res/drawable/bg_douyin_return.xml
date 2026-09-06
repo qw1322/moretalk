@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 抖音「回首页」大按钮：红色圆形 + 白色描边，醒目易点 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#E53935" />
+    <stroke
+        android:width="3dp"
+        android:color="#FFFFFF" />
+</shape>

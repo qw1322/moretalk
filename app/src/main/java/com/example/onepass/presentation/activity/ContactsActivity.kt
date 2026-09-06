@@ -201,6 +201,31 @@ class ContactsActivity : AppCompatActivity(), ContactAdapter.OnContactClickListe
         intent.putExtra("contact_call", contact.hasPhoneCall)
         startActivity(intent)
     }
+
+    override fun onMoveContact(contact: Contact, direction: Int) {
+        val index = contacts.indexOfFirst { it.id == contact.id }
+        if (index < 0) return
+        val targetIndex = index + direction
+        if (targetIndex < 0 || targetIndex >= contacts.size) {
+            Toast.makeText(
+                this,
+                if (direction < 0) "「${contact.name}」已经是最前面了" else "「${contact.name}」已经是最后面了",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        // 交换相邻位置并立即保存（联系人列表顺序即主界面显示顺序）
+        val tmp = contacts[index]
+        contacts[index] = contacts[targetIndex]
+        contacts[targetIndex] = tmp
+        val gson = Gson()
+        getSharedPreferences(CONTACTS_PREFS, android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_CONTACTS, gson.toJson(contacts))
+            .apply()
+        contactAdapter.notifyDataSetChanged()
+        Log.d(TAG, "联系人排序: ${contact.name} ${if (direction < 0) "上移" else "下移"}")
+    }
     
     private fun showSearchDialog() {
         Log.d(TAG, "显示搜索联系人对话框")

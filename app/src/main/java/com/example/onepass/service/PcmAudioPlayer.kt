@@ -35,8 +35,11 @@ class PcmAudioPlayer {
 
         currentTrack = audioTrack
         audioTrack.setVolume(volume.coerceIn(0f, 1f))
-        audioTrack.play()
+        // 先写入数据再 play：若先 play，MODE_STREAM 在数据到达前会先播放
+        // 一段空白/静音，导致每句播报开头发闷、听不清。
+        // 缓冲区已保证 >= 全部样本，write 会一次性接受全部数据后立即开始播放。
         audioTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+        audioTrack.play()
 
         // WRITE_BLOCKING 只保证写入缓冲区完成，不保证已经真正播放完。
         while (currentTrack === audioTrack &&

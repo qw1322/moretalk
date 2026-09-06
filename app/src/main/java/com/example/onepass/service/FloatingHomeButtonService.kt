@@ -25,17 +25,37 @@ class FloatingHomeButtonService : Service() {
         private const val BALL_SIZE_DP = 76
         private const val EDGE_MARGIN_DP = 16
         private const val FADE_DELAY_MS = 20_000L
-        private const val RESTED_ALPHA = 0.4f
-        private const val ACTIVE_ALPHA = 1f
+        /** 20 秒无点击后的淡化系数（相对当前不透明度） */
+        private const val RESTED_FACTOR = 0.4f
+        private const val PREFS_NAME = "OnePassPrefs"
+        private const val DEFAULT_PCT = 100
+
+        /** 悬浮球大小百分比（相对默认 76dp，范围 50%..150%） */
+        const val KEY_FLOAT_BALL_SIZE_PCT = "float_ball_size_pct"
+        /** 悬浮球不透明度百分比（范围 20%..100%，100=不透明） */
+        const val KEY_FLOAT_BALL_ALPHA_PCT = "float_ball_alpha_pct"
+
+        /** 从设置读取悬浮球大小百分比 */
+        fun getSizePct(context: Context): Int = context
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_FLOAT_BALL_SIZE_PCT, DEFAULT_PCT)
+            .coerceIn(50, 150)
+
+        /** 从设置读取悬浮球不透明度（0f..1f） */
+        fun getAlpha(context: Context): Float = context
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_FLOAT_BALL_ALPHA_PCT, DEFAULT_PCT)
+            .coerceIn(20, 100) / 100f
     }
 
     private var windowManager: WindowManager? = null
     private var floatView: ImageView? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var baseAlpha = 1f
 
     // 20 秒无点击后淡化为半透明，点击恢复不透明并重新计时
     private val fadeRunnable = Runnable {
-        floatView?.animate()?.alpha(RESTED_ALPHA)?.setDuration(400)?.start()
+        floatView?.animate()?.alpha(RESTED_FACTOR * baseAlpha)?.setDuration(400)?.start()
     }
 
     private fun scheduleFade() {
@@ -63,7 +83,10 @@ class FloatingHomeButtonService : Service() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
         val density = resources.displayMetrics.density
-        val ballSize = (BALL_SIZE_DP * density).toInt()
+        // 应用设置的大小百分比（默认 100% = 76dp）与不透明度
+        val ballSizeDp = BALL_SIZE_DP * getSizePct(this) / 100
+        val ballSize = (ballSizeDp * density).toInt()
+        baseAlpha = getAlpha(this)
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -90,10 +113,10 @@ class FloatingHomeButtonService : Service() {
             setImageResource(R.drawable.ic_home)
             setBackgroundResource(R.drawable.bg_float_ball)
             contentDescription = "返回桌面"
-            alpha = ACTIVE_ALPHA
+            alpha = baseAlpha
             setOnClickListener {
                 // 点击：立即恢复不透明，重新计时
-                floatView?.alpha = ACTIVE_ALPHA
+                floatView?.alpha = baseAlpha
                 scheduleFade()
                 goHome()
             }

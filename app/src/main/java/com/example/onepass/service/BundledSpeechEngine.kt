@@ -1,4 +1,4 @@
-﻿package com.example.onepass.service
+package com.example.onepass.service
 
 import android.content.Context
 import android.util.Log
@@ -304,9 +304,20 @@ class BundledSpeechEngine(private val context: Context) : AutoCloseable {
         return audio.samples.isNotEmpty() && peak > MIN_USABLE_PEAK
     }
 
+    /**
+     * 转 PCM16 时做响度归一化：Matcha 模型输出峰值通常只有 0.1~0.3，
+     * 叠加用户音量后老人机扬声器上会显得声音小、听不清。
+     * 将峰值提升到接近满幅（限制最大增益，避免放大噪声/爆音）。
+     */
     private fun floatToPcm16(samples: FloatArray): ShortArray {
+        val peak = samples.maxOfOrNull { abs(it) } ?: 0f
+        val gain = if (peak > 0f && peak < NORMALIZE_TARGET_PEAK) {
+            minOf(NORMALIZE_TARGET_PEAK / peak, MAX_NORMALIZE_GAIN)
+        } else {
+            1f
+        }
         return ShortArray(samples.size) { index ->
-            val clipped = samples[index].coerceIn(-1f, 1f)
+            val clipped = (samples[index] * gain).coerceIn(-1f, 1f)
             (clipped * Short.MAX_VALUE).toInt().toShort()
         }
     }
@@ -319,6 +330,10 @@ class BundledSpeechEngine(private val context: Context) : AutoCloseable {
         private const val DEFAULT_NOISE_SCALE = 0.667f
         private const val DEFAULT_LENGTH_SCALE = 1.0f
         private const val MIN_USABLE_PEAK = 0.003f
+        /** 归一化目标峰值（相对满幅 1.0） */
+        private const val NORMALIZE_TARGET_PEAK = 0.9f
+        /** 最大增益倍数，防止过度放大 */
+        private const val MAX_NORMALIZE_GAIN = 4f
     }
 }
 

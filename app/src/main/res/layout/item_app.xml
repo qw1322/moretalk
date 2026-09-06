@@ -20,8 +20,46 @@
         android:textSize="18sp"
         android:textColor="#333333"/>
 
+    <!-- 排序按钮：仅已选中的应用可用，用于调整主界面顺序 -->
+    <LinearLayout
+        android:id="@+id/moveButtons"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/btnMoveUp"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="56dp"
+            android:layout_height="48dp"
+            android:text="上移"
+            android:textSize="14sp"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/bg_primary_button"
+            android:layout_marginEnd="8dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp"/>
+
+        <Button
+            android:id="@+id/btnMoveDown"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="56dp"
+            android:layout_height="48dp"
+            android:text="下移"
+            android:textSize="14sp"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/bg_primary_button"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp"/>
+    </LinearLayout>
+
     <Switch
         android:id="@+id/appSelected"
         android:layout_width="80dp"
-        android:layout_height="48dp"/>
+        android:layout_height="48dp"
+        android:layout_marginStart="8dp"/>
 </LinearLayout>

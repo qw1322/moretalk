@@ -59,6 +59,10 @@
         android:exported="false" />
 
     <service
+        android:name=".service.DouyinReturnButtonService"
+        android:exported="false" />
+
+    <service
         android:name=".service.RemoteAssistService"
         android:exported="false"
         android:foregroundServiceType="mediaProjection" />

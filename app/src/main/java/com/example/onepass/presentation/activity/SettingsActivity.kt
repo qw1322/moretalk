@@ -24,9 +24,11 @@ import androidx.appcompat.app.AppCompatActivity
 import com.example.onepass.R
 import com.example.onepass.core.config.GlobalScaleManager
 import com.example.onepass.service.BundledSpeechSupport
+import com.example.onepass.service.DouyinReturnButtonService
 import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
+import com.google.android.accessibility.selecttospeak.SelectToSpeakService
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -93,6 +95,21 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var switchFloatingBall: Switch
     private lateinit var textFloatingBallTitle: TextView
     private lateinit var textFloatingBallDesc: TextView
+    private lateinit var seekBarFloatBallSize: SeekBar
+    private lateinit var textFloatBallSize: TextView
+    private lateinit var seekBarFloatBallAlpha: SeekBar
+    private lateinit var textFloatBallAlpha: TextView
+    private lateinit var switchBlockShade: Switch
+    private lateinit var textBlockShadeTitle: TextView
+    private lateinit var textBlockShadeDesc: TextView
+    private lateinit var switchDouyinSafe: Switch
+    private lateinit var textDouyinSafeTitle: TextView
+    private lateinit var textDouyinSafeDesc: TextView
+    private lateinit var switchDouyinBtnHideOnExit: Switch
+    private lateinit var seekBarDouyinBtnSize: SeekBar
+    private lateinit var textDouyinBtnSize: TextView
+    private lateinit var seekBarDouyinBtnAlpha: SeekBar
+    private lateinit var textDouyinBtnAlpha: TextView
     private lateinit var switchWechatMsgRead: Switch
     private lateinit var textWechatMsgReadTitle: TextView
     private lateinit var textWechatMsgReadDesc: TextView
@@ -129,6 +146,7 @@ class SettingsActivity : AppCompatActivity() {
         val scalePercentage = GlobalScaleManager.getScalePercentage(this)
         applyScaleEffects(scalePercentage)
         syncFloatingBallService()
+        syncDouyinButtonService()
         updateRemoteAssistStatus()
     }
 
@@ -150,6 +168,49 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun stopFloatingBallService() {
         stopService(Intent(this, FloatingHomeButtonService::class.java))
+    }
+
+    /**
+     * 重启悬浮球服务使大小/透明度设置立即生效（仅当开关开启且已授予悬浮窗权限）
+     */
+    private fun restartFloatingBallService() {
+        val enabled = prefs.getBoolean(KEY_FLOAT_BALL_ENABLED, true)
+        if (enabled && Settings.canDrawOverlays(this)) {
+            stopService(Intent(this, FloatingHomeButtonService::class.java))
+            startService(Intent(this, FloatingHomeButtonService::class.java))
+        }
+    }
+
+    /**
+     * 启动抖音安心刷悬浮按钮服务（仅在已授予悬浮窗权限时）
+     */
+    private fun startDouyinSafeService() {
+        if (Settings.canDrawOverlays(this)) {
+            startService(Intent(this, DouyinReturnButtonService::class.java))
+        }
+    }
+
+    /**
+     * 重启抖音按钮服务使大小/透明度设置立即生效（仅当开关开启且已授予悬浮窗权限）
+     */
+    private fun restartDouyinButtonService() {
+        val enabled = prefs.getBoolean(SelectToSpeakService.KEY_DOUYIN_SAFE_MODE, false)
+        if (enabled && Settings.canDrawOverlays(this)) {
+            stopService(Intent(this, DouyinReturnButtonService::class.java))
+            startService(Intent(this, DouyinReturnButtonService::class.java))
+        }
+    }
+
+    /**
+     * 按开关状态与悬浮窗权限同步抖音安心刷服务（从权限设置页返回时也会执行）
+     */
+    private fun syncDouyinButtonService() {
+        val enabled = prefs.getBoolean(SelectToSpeakService.KEY_DOUYIN_SAFE_MODE, false)
+        if (enabled && Settings.canDrawOverlays(this)) {
+            startService(Intent(this, DouyinReturnButtonService::class.java))
+        } else if (!enabled) {
+            stopService(Intent(this, DouyinReturnButtonService::class.java))
+        }
     }
 
     private fun requestOverlayPermission() {
@@ -194,6 +255,21 @@ class SettingsActivity : AppCompatActivity() {
         switchFloatingBall = findViewById(R.id.switchFloatingBall)
         textFloatingBallTitle = findViewById(R.id.textFloatingBallTitle)
         textFloatingBallDesc = findViewById(R.id.textFloatingBallDesc)
+        seekBarFloatBallSize = findViewById(R.id.seekBarFloatBallSize)
+        textFloatBallSize = findViewById(R.id.textFloatBallSize)
+        seekBarFloatBallAlpha = findViewById(R.id.seekBarFloatBallAlpha)
+        textFloatBallAlpha = findViewById(R.id.textFloatBallAlpha)
+        switchBlockShade = findViewById(R.id.switchBlockShade)
+        textBlockShadeTitle = findViewById(R.id.textBlockShadeTitle)
+        textBlockShadeDesc = findViewById(R.id.textBlockShadeDesc)
+        switchDouyinSafe = findViewById(R.id.switchDouyinSafe)
+        textDouyinSafeTitle = findViewById(R.id.textDouyinSafeTitle)
+        textDouyinSafeDesc = findViewById(R.id.textDouyinSafeDesc)
+        switchDouyinBtnHideOnExit = findViewById(R.id.switchDouyinBtnHideOnExit)
+        seekBarDouyinBtnSize = findViewById(R.id.seekBarDouyinBtnSize)
+        textDouyinBtnSize = findViewById(R.id.textDouyinBtnSize)
+        seekBarDouyinBtnAlpha = findViewById(R.id.seekBarDouyinBtnAlpha)
+        textDouyinBtnAlpha = findViewById(R.id.textDouyinBtnAlpha)
         switchWechatMsgRead = findViewById(R.id.switchWechatMsgRead)
         textWechatMsgReadTitle = findViewById(R.id.textWechatMsgReadTitle)
         textWechatMsgReadDesc = findViewById(R.id.textWechatMsgReadDesc)
@@ -247,10 +323,42 @@ class SettingsActivity : AppCompatActivity() {
 
         switchFloatingBall.isChecked = prefs.getBoolean(KEY_FLOAT_BALL_ENABLED, true)
 
+        // 悬浮球大小：进度 0..100 → 百分比 50%..150%（默认 100%）
+        val floatBallSizePct = prefs.getInt(FloatingHomeButtonService.KEY_FLOAT_BALL_SIZE_PCT, 100)
+        seekBarFloatBallSize.progress = (floatBallSizePct - 50).coerceIn(0, 100)
+        textFloatBallSize.text = "$floatBallSizePct%"
+        // 悬浮球透明度：进度 0..80 → 百分比 20%..100%（默认 100%=不透明）
+        val floatBallAlphaPct = prefs.getInt(FloatingHomeButtonService.KEY_FLOAT_BALL_ALPHA_PCT, 100)
+        seekBarFloatBallAlpha.progress = (floatBallAlphaPct - 20).coerceIn(0, 80)
+        textFloatBallAlpha.text = "$floatBallAlphaPct%"
+
         switchWechatMsgRead.isChecked = prefs.getBoolean(
             WeChatMessageReader.KEY_WECHAT_MSG_READ_ENABLED,
             false
         )
+
+        switchBlockShade.isChecked = prefs.getBoolean(
+            SelectToSpeakService.KEY_BLOCK_NOTIFICATION_SHADE,
+            false
+        )
+
+        switchDouyinSafe.isChecked = prefs.getBoolean(
+            SelectToSpeakService.KEY_DOUYIN_SAFE_MODE,
+            false
+        )
+
+        switchDouyinBtnHideOnExit.isChecked = prefs.getBoolean(
+            DouyinReturnButtonService.KEY_HIDE_ON_EXIT,
+            true
+        )
+        // 按钮大小：进度 0..100 → 百分比 50%..150%（默认 100%）
+        val douyinBtnSizePct = prefs.getInt(DouyinReturnButtonService.KEY_BTN_SIZE_PCT, 100)
+        seekBarDouyinBtnSize.progress = (douyinBtnSizePct - 50).coerceIn(0, 100)
+        textDouyinBtnSize.text = "$douyinBtnSizePct%"
+        // 按钮透明度：进度 0..80 → 百分比 20%..100%（默认 100%=不透明）
+        val douyinBtnAlphaPct = prefs.getInt(DouyinReturnButtonService.KEY_BTN_ALPHA_PCT, 100)
+        seekBarDouyinBtnAlpha.progress = (douyinBtnAlphaPct - 20).coerceIn(0, 80)
+        textDouyinBtnAlpha.text = "$douyinBtnAlphaPct%"
 
         when (prefs.getString(KEY_HOME_DETAIL_MODE, VALUE_HOME_DETAIL_BATTERY)) {
             VALUE_HOME_DETAIL_WEATHER -> radioDetailWeather.isChecked = true
@@ -409,6 +517,38 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
+        // 悬浮球大小：拖动后保存并重启服务立即生效
+        seekBarFloatBallSize.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                textFloatBallSize.text = "${progress + 50}%"
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val pct = seekBarFloatBallSize.progress + 50
+                prefs.edit().putInt(FloatingHomeButtonService.KEY_FLOAT_BALL_SIZE_PCT, pct).apply()
+                restartFloatingBallService()
+                Toast.makeText(this@SettingsActivity, "悬浮球大小已调整为 $pct%", Toast.LENGTH_SHORT).show()
+            }
+        })
+
+        // 悬浮球透明度：拖动后保存并重启服务立即生效（100%=不透明）
+        seekBarFloatBallAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                textFloatBallAlpha.text = "${progress + 20}%"
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val pct = seekBarFloatBallAlpha.progress + 20
+                prefs.edit().putInt(FloatingHomeButtonService.KEY_FLOAT_BALL_ALPHA_PCT, pct).apply()
+                restartFloatingBallService()
+                Toast.makeText(this@SettingsActivity, "悬浮球透明度已调整为 $pct%", Toast.LENGTH_SHORT).show()
+            }
+        })
+
         switchWechatMsgRead.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(WeChatMessageReader.KEY_WECHAT_MSG_READ_ENABLED, isChecked).apply()
             Toast.makeText(
@@ -417,6 +557,75 @@ class SettingsActivity : AppCompatActivity() {
                 Toast.LENGTH_SHORT
             ).show()
         }
+
+        switchBlockShade.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(SelectToSpeakService.KEY_BLOCK_NOTIFICATION_SHADE, isChecked).apply()
+            Toast.makeText(
+                this,
+                if (isChecked) "已开启禁用下拉通知栏" else "已关闭禁用下拉通知栏",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        switchDouyinSafe.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(SelectToSpeakService.KEY_DOUYIN_SAFE_MODE, isChecked).apply()
+            if (isChecked) {
+                if (!Settings.canDrawOverlays(this)) {
+                    Toast.makeText(this, "请授予悬浮窗权限后自动开启抖音安心刷", Toast.LENGTH_LONG).show()
+                    requestOverlayPermission()
+                } else {
+                    startDouyinSafeService()
+                }
+            } else {
+                stopService(Intent(this, DouyinReturnButtonService::class.java))
+            }
+            Toast.makeText(
+                this,
+                if (isChecked) "已开启抖音安心刷" else "已关闭抖音安心刷",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        switchDouyinBtnHideOnExit.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(DouyinReturnButtonService.KEY_HIDE_ON_EXIT, isChecked).apply()
+            Toast.makeText(
+                this,
+                if (isChecked) "已开启：退出抖音后自动隐藏按钮" else "已关闭：退出抖音后按钮保留片刻",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        // 按钮大小：拖动后保存并重启按钮服务立即生效
+        seekBarDouyinBtnSize.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                textDouyinBtnSize.text = "${progress + 50}%"
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val pct = seekBarDouyinBtnSize.progress + 50
+                prefs.edit().putInt(DouyinReturnButtonService.KEY_BTN_SIZE_PCT, pct).apply()
+                restartDouyinButtonService()
+                Toast.makeText(this@SettingsActivity, "按钮大小已调整为 $pct%", Toast.LENGTH_SHORT).show()
+            }
+        })
+
+        // 按钮透明度：拖动后保存并重启按钮服务立即生效（100%=不透明）
+        seekBarDouyinBtnAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                textDouyinBtnAlpha.text = "${progress + 20}%"
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val pct = seekBarDouyinBtnAlpha.progress + 20
+                prefs.edit().putInt(DouyinReturnButtonService.KEY_BTN_ALPHA_PCT, pct).apply()
+                restartDouyinButtonService()
+                Toast.makeText(this@SettingsActivity, "按钮透明度已调整为 $pct%", Toast.LENGTH_SHORT).show()
+            }
+        })
 
         seekBarBroadcastVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -651,6 +860,13 @@ class SettingsActivity : AppCompatActivity() {
         textSpeechRateTitle.textSize = scaledTitleSize
         textFloatingBallTitle.textSize = scaledTitleSize
         textWechatMsgReadTitle.textSize = scaledTitleSize
+        textBlockShadeTitle.textSize = scaledTitleSize
+        textDouyinSafeTitle.textSize = scaledTitleSize
+        findViewById<TextView>(R.id.textDouyinBtnHideTitle).textSize = scaledOptionSize
+        findViewById<TextView>(R.id.textDouyinBtnSizeTitle).textSize = scaledOptionSize
+        findViewById<TextView>(R.id.textDouyinBtnAlphaTitle).textSize = scaledOptionSize
+        findViewById<TextView>(R.id.textFloatBallSizeTitle).textSize = scaledOptionSize
+        findViewById<TextView>(R.id.textFloatBallAlphaTitle).textSize = scaledOptionSize
 
         radioLunar.textSize = scaledOptionSize
         radioSolar.textSize = scaledOptionSize
@@ -661,6 +877,8 @@ class SettingsActivity : AppCompatActivity() {
         radioDetailWeather.textSize = scaledOptionSize
         textIconSize.textSize = scaledOptionSize
         textBroadcastVolume.textSize = scaledOptionSize
+        textFloatBallSize.textSize = scaledOptionSize
+        textFloatBallAlpha.textSize = scaledOptionSize
         textCurrentSpeechEngine.textSize = scaledOptionSize
         textBundledSpeechModel.textSize = scaledOptionSize
         textNoCommonApps.textSize = scaledOptionSize
@@ -671,6 +889,10 @@ class SettingsActivity : AppCompatActivity() {
         textWeatherDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
         textFloatingBallDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
         textWechatMsgReadDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
+        textBlockShadeDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
+        textDouyinSafeDesc.textSize = GlobalScaleManager.getScaledValue(this, 16f)
+        textDouyinBtnSize.textSize = scaledOptionSize
+        textDouyinBtnAlpha.textSize = scaledOptionSize
 
         btnSetDefaultLauncher.textSize = scaledOptionSize
         btnClearDefaultLauncher.textSize = scaledOptionSize

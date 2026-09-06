@@ -55,12 +55,14 @@ import com.example.onepass.domain.model.WeChatData
 import com.example.onepass.presentation.adapter.HomeContactAdapter
 import com.example.onepass.service.BundledSpeechEngine
 import com.example.onepass.service.BundledSpeechSupport
+import com.example.onepass.service.DouyinReturnButtonService
 import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.FlashlightController
 import com.example.onepass.service.RemoteAssistService
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
 import com.example.onepass.utils.PerformanceMonitor
+import com.google.android.accessibility.selecttospeak.SelectToSpeakService
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -86,6 +88,20 @@ import kotlinx.coroutines.withContext
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "WeatherAPI"
+
+        /** 桌面自带功能瓦片可见性（存于 common_apps_prefs，默认全部显示） */
+        const val KEY_TILE_WECHAT_READ = "tile_wechat_read_visible"
+        const val KEY_TILE_TORCH = "tile_torch_visible"
+        const val KEY_TILE_REMOTE_ASSIST = "tile_remote_assist_visible"
+
+        /** 桌面自带功能瓦片 ID（参与排序，存于 app_orders） */
+        const val TILE_ID_WECHAT_READ = "__wechat_read__"
+        const val TILE_ID_TORCH = "__torch__"
+        const val TILE_ID_REMOTE_ASSIST = "__remote_assist__"
+
+        private val TILE_IDS = setOf(TILE_ID_WECHAT_READ, TILE_ID_TORCH, TILE_ID_REMOTE_ASSIST)
+
+        fun isTileId(id: String): Boolean = id in TILE_IDS
     }
     private lateinit var dateTypeText: TextView
     private lateinit var dateText: TextView
@@ -205,7 +221,6 @@ class MainActivity : AppCompatActivity() {
 
     // 快捷功能相关
     private val KEY_FLOAT_BALL_ENABLED = "float_ball_enabled"
-    private val TOGGLE_WECHAT_READ_ID = "__wechat_read__"
 
     /** 手电筒相机权限请求（授予后立即开关手电筒） */
     private val torchPermissionLauncher = registerForActivityResult(
@@ -328,6 +343,7 @@ class MainActivity : AppCompatActivity() {
         loadCommonApps()
         loadContacts()
         syncFloatingBallService()
+        syncDouyinButtonService()
 
         Log.d(TAG, "onResume 完成")
     }
@@ -665,6 +681,19 @@ class MainActivity : AppCompatActivity() {
             startService(Intent(this, FloatingHomeButtonService::class.java))
         } else if (!enabled) {
             stopService(Intent(this, FloatingHomeButtonService::class.java))
+        }
+    }
+
+    /**
+     * 按开关状态与悬浮窗权限同步抖音安心刷悬浮按钮服务
+     */
+    private fun syncDouyinButtonService() {
+        val enabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(SelectToSpeakService.KEY_DOUYIN_SAFE_MODE, false)
+        if (enabled && hasOverlayPermission()) {
+            startService(Intent(this, DouyinReturnButtonService::class.java))
+        } else if (!enabled) {
+            stopService(Intent(this, DouyinReturnButtonService::class.java))
         }
     }
 
@@ -1878,8 +1907,8 @@ class MainActivity : AppCompatActivity() {
         
         // 加载应用信息
         for (packageName in sortedApps) {
-            // 开关瓦片由下方固定追加，跳过历史残留
-            if (packageName == TOGGLE_WECHAT_READ_ID) continue
+            // 内置功能瓦片不在此加载（由下方按设置追加，参与排序）
+            if (isTileId(packageName)) continue
             try {
                 val packageInfo = packageManager.getPackageInfo(packageName, 0)
                 val appName = packageInfo.applicationInfo?.loadLabel(packageManager)?.toString() ?: packageName
@@ -1892,12 +1921,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        // 固定追加「微信点读」开关瓦片
-        appendWechatReadTile()
-        // 固定追加「手电筒」开关瓦片（集成在应用内）
-        appendTorchTile()
-        // 固定追加「远程协助」瓦片（运行状态显示）
-        appendRemoteAssistTile()
+        // 追加「微信点读」「手电筒」「远程协助」瓦片（是否显示由常用应用编辑页的开关控制）
+        val tilePrefs = getSharedPreferences(COMMON_APPS_PREFS, Context.MODE_PRIVATE)
+        if (tilePrefs.getBoolean(KEY_TILE_WECHAT_READ, true)) appendWechatReadTile()
+        if (tilePrefs.getBoolean(KEY_TILE_TORCH, true)) appendTorchTile()
+        if (tilePrefs.getBoolean(KEY_TILE_REMOTE_ASSIST, true)) appendRemoteAssistTile()
+
+        // 瓦片与已选应用一起按排序值排列（瓦片 ID 也存于 app_orders，编辑页可拖动顺序）
+        commonApps.sortWith(Comparator { app1, app2 ->
+            val order1 = appOrders[app1.packageName] ?: Int.MAX_VALUE
+            val order2 = appOrders[app2.packageName] ?: Int.MAX_VALUE
+            order1.compareTo(order2)
+        })
         
         // 创建新的适配器
         commonAppsAdapter = CommonAppAdapter(commonApps, ::handleCommonAppClick, iconSize)
@@ -1924,7 +1959,7 @@ class MainActivity : AppCompatActivity() {
             .getBoolean(WeChatMessageReader.KEY_WECHAT_MSG_READ_ENABLED, false)
         val icon = ContextCompat.getDrawable(this, R.drawable.ic_wechat_read) ?: return
         commonApps.add(
-            CommonApp(TOGGLE_WECHAT_READ_ID, "微信点读", icon, isToggle = true, toggleOn = enabled)
+            CommonApp(TILE_ID_WECHAT_READ, "微信点读", icon, isToggle = true, toggleOn = enabled)
         )
     }
 
@@ -1934,7 +1969,7 @@ class MainActivity : AppCompatActivity() {
     private fun appendTorchTile() {
         val icon = ContextCompat.getDrawable(this, R.drawable.ic_flashlight) ?: return
         commonApps.add(
-            CommonApp("__torch__", "手电筒", icon, isTorch = true, toggleOn = FlashlightController.isTorchOn)
+            CommonApp(TILE_ID_TORCH, "手电筒", icon, isTorch = true, toggleOn = FlashlightController.isTorchOn)
         )
     }
 
@@ -1946,7 +1981,7 @@ class MainActivity : AppCompatActivity() {
         val icon = ContextCompat.getDrawable(this, R.drawable.ic_remote_assist) ?: return
         commonApps.add(
             CommonApp(
-                "__remote_assist__",
+                TILE_ID_REMOTE_ASSIST,
                 "远程协助",
                 icon,
                 isRemoteAssist = true,

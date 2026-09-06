@@ -44,6 +44,9 @@
             android:paddingEnd="16dp"/>
     </LinearLayout>
 
+    <!-- 桌面功能瓦片（微信点读/手电筒/远程协助）显示在列表末尾，作为可排序条目，
+         行内开关控制主界面显示/隐藏，上移/下移按钮调整顺序 -->
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recyclerViewApps"
         android:layout_width="match_parent"

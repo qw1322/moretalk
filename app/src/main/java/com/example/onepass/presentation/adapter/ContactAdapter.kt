@@ -9,18 +9,24 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.example.onepass.R
+import com.example.onepass.core.config.GlobalScaleManager
 import com.example.onepass.domain.model.Contact
 
 class ContactAdapter(private val contacts: List<Contact>, private val listener: OnContactClickListener) : RecyclerView.Adapter<ContactAdapter.ContactViewHolder>() {
 
     interface OnContactClickListener {
         fun onContactClick(contact: Contact)
+
+        /** 上移/下移联系人（direction: -1 上移, 1 下移），由编辑页实现持久化 */
+        fun onMoveContact(contact: Contact, direction: Int)
     }
 
     class ContactViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         val contactImage: ImageView = itemView.findViewById(R.id.contactImage)
         val contactName: TextView = itemView.findViewById(R.id.contactName)
         val contactInfo: TextView = itemView.findViewById(R.id.contactInfo)
+        val btnMoveUp: View = itemView.findViewById(R.id.btnMoveUp)
+        val btnMoveDown: View = itemView.findViewById(R.id.btnMoveDown)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ContactViewHolder {
@@ -83,6 +89,17 @@ class ContactAdapter(private val contacts: List<Contact>, private val listener: 
         // 设置点击事件
         holder.itemView.setOnClickListener {
             listener.onContactClick(contact)
+        }
+
+        // 排序按钮：点击调整联系人主界面顺序
+        val buttonTextSize = GlobalScaleManager.getScaledValue(holder.itemView.context, 20f)
+        (holder.btnMoveUp as? TextView)?.textSize = buttonTextSize
+        (holder.btnMoveDown as? TextView)?.textSize = buttonTextSize
+        holder.btnMoveUp.setOnClickListener {
+            listener.onMoveContact(contact, -1)
+        }
+        holder.btnMoveDown.setOnClickListener {
+            listener.onMoveContact(contact, 1)
         }
     }
 
