@@ -11,9 +11,6 @@ import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.location.LocationManager as AndroidLocationManager
-import android.graphics.Color
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffColorFilter
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.Rect
@@ -215,11 +212,11 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            val on = FlashlightController.toggle(this)
-            // 更新手电筒瓦片状态
-            commonApps.find { it.isTorch }?.toggleOn = on
+            FlashlightController.toggle(this)
+            // 更新手电筒瓦片状态（toggle 返回的是是否成功，状态以控制器为准）
+            commonApps.find { it.isTorch }?.toggleOn = FlashlightController.isTorchOn
             commonAppsAdapter.notifyDataSetChanged()
-            Toast.makeText(this, if (on) "手电筒已开" else "手电筒已关", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, if (FlashlightController.isTorchOn) "手电筒已开" else "手电筒已关", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(this, "未获得相机权限，无法使用手电筒", Toast.LENGTH_SHORT).show()
         }
@@ -1974,10 +1971,11 @@ class MainActivity : AppCompatActivity() {
                 torchPermissionLauncher.launch(android.Manifest.permission.CAMERA)
                 return
             }
-            val on = FlashlightController.toggle(this)
-            app.toggleOn = on
+            FlashlightController.toggle(this)
+            // toggle 返回的是是否成功，状态以控制器为准（避免关灯后图标仍显示开启）
+            app.toggleOn = FlashlightController.isTorchOn
             commonAppsAdapter.notifyDataSetChanged()
-            Toast.makeText(this, if (on) "手电筒已开" else "手电筒已关", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, if (app.toggleOn) "手电筒已开" else "手电筒已关", Toast.LENGTH_SHORT).show()
             return
         }
         if (app.isRemoteAssist) {
@@ -2069,7 +2067,8 @@ class CommonAppAdapter(
             nameView.text = app.appName
 
             if (app.isToggle || app.isRemoteAssist || app.isTorch) {
-                // 状态瓦片：开=绿色，关=灰色，名称带状态
+                // 状态瓦片：图标自含彩色底（不再叠加背景/滤镜），开关用亮度+名称文字区分：
+                // 开=全彩明亮，关=轻微淡化（保持彩色可辨，避免全灰/暗色）
                 nameView.text = when {
                     app.isRemoteAssist ->
                         if (app.toggleOn) "远程协助（运行中）" else "远程协助"
@@ -2084,26 +2083,11 @@ class CommonAppAdapter(
                         if (app.toggleOn) R.color.toggle_on_text else R.color.toggle_off_text
                     )
                 )
+                iconView.background = null
+                iconView.colorFilter = null
+                iconView.alpha = if (app.toggleOn) 1f else 0.65f
             } else {
                 nameView.setTextColor(ContextCompat.getColor(itemView.context, android.R.color.black))
-            }
-
-            if (app.isTorch) {
-                // 手电筒：图标自含圆角底色，不再叠加背景（去掉灰边）；
-                // 开=原色亮起，关=灰色淡化，状态直观且无边框感
-                iconView.background = null
-                if (app.toggleOn) {
-                    iconView.colorFilter = null
-                    iconView.alpha = 1f
-                } else {
-                    iconView.colorFilter = PorterDuffColorFilter(TORCH_OFF_TINT, PorterDuff.Mode.SRC_IN)
-                    iconView.alpha = 0.55f
-                }
-            } else if (app.isToggle || app.isRemoteAssist) {
-                iconView.setBackgroundResource(
-                    if (app.toggleOn) R.drawable.bg_toggle_on else R.drawable.bg_toggle_off
-                )
-            } else {
                 iconView.background = null
                 iconView.colorFilter = null
                 iconView.alpha = 1f
@@ -2119,11 +2103,6 @@ class CommonAppAdapter(
             itemView.setOnClickListener {
                 listener(app)
             }
-        }
-
-        private companion object {
-            /** 手电筒关闭时的灰色色调（与 bg_toggle_off 同色，保证状态色一致） */
-            val TORCH_OFF_TINT = Color.rgb(0x9C, 0xA3, 0xAF)
         }
     }
 }
