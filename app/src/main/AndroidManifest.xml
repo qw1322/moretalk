@@ -93,17 +93,6 @@
 
 
     <activity android:name=".presentation.activity.SettingsActivity" android:exported="false" android:label="设置" />
-    <activity
-        android:name=".presentation.activity.TorchActivity"
-        android:exported="true"
-        android:label="手电筒"
-        android:icon="@drawable/ic_flashlight"
-        android:theme="@style/Theme.OnePass.Transparent">
-      <intent-filter>
-        <action android:name="android.intent.action.MAIN" />
-        <category android:name="android.intent.category.LAUNCHER" />
-      </intent-filter>
-    </activity>
     <activity android:name=".presentation.activity.CommonAppsActivity" android:exported="false" android:label="常用应用" />
     <activity android:name=".presentation.activity.ContactsActivity" android:exported="false" android:label="联系人" />
     <activity android:name=".presentation.activity.AddContactActivity" android:exported="false" android:label="添加联系人" />

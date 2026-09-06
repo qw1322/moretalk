@@ -585,17 +585,8 @@ class SettingsActivity : AppCompatActivity() {
 
         for (packageName in sortedApps) {
             runCatching {
-                val appIcon: android.graphics.drawable.Drawable = if (packageName == this.packageName) {
-                    // 本应用快捷入口（手电筒）按 Activity 解析图标
-                    val activityInfo = packageManager.getActivityInfo(
-                        android.content.ComponentName(packageName, TorchActivity::class.java.name),
-                        0
-                    )
-                    activityInfo.loadIcon(packageManager)
-                } else {
-                    val packageInfo = packageManager.getPackageInfo(packageName, 0)
-                    packageInfo.applicationInfo?.loadIcon(packageManager) ?: return@runCatching
-                }
+                val packageInfo = packageManager.getPackageInfo(packageName, 0)
+                val appIcon = packageInfo.applicationInfo?.loadIcon(packageManager) ?: return@runCatching
                 val item = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
@@ -617,15 +608,11 @@ class SettingsActivity : AppCompatActivity() {
 
                 item.addView(iconView)
                 item.setOnClickListener {
-                    if (packageName == this@SettingsActivity.packageName) {
-                        startActivity(Intent(this@SettingsActivity, TorchActivity::class.java))
+                    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                    if (launchIntent != null) {
+                        startActivity(launchIntent)
                     } else {
-                        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                        if (launchIntent != null) {
-                            startActivity(launchIntent)
-                        } else {
-                            Toast.makeText(this@SettingsActivity, "无法打开该应用", Toast.LENGTH_SHORT).show()
-                        }
+                        Toast.makeText(this@SettingsActivity, "无法打开该应用", Toast.LENGTH_SHORT).show()
                     }
                 }
                 commonAppsContainer.addView(item)

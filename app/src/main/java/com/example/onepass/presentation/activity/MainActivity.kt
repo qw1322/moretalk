@@ -11,6 +11,9 @@ import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.location.LocationManager as AndroidLocationManager
+import android.graphics.Color
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.Rect
@@ -1799,12 +1802,6 @@ class MainActivity : AppCompatActivity() {
     private fun launchApp(packageName: String) {
         Log.d(TAG, "启动应用: $packageName")
 
-        // 本应用快捷入口（手电筒）特殊处理
-        if (packageName == this.packageName) {
-            startActivity(Intent(this, TorchActivity::class.java))
-            return
-        }
-
         try {
             val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             if (launchIntent != null) {
@@ -1887,21 +1884,9 @@ class MainActivity : AppCompatActivity() {
             // 开关瓦片由下方固定追加，跳过历史残留
             if (packageName == TOGGLE_WECHAT_READ_ID) continue
             try {
-                val appName: String
-                val appIcon: Drawable
-                if (packageName == this.packageName) {
-                    // 本应用的快捷入口（手电筒）：按 Activity 解析名称与图标
-                    val activityInfo = packageManager.getActivityInfo(
-                        android.content.ComponentName(packageName, TorchActivity::class.java.name),
-                        0
-                    )
-                    appName = activityInfo.loadLabel(packageManager).toString()
-                    appIcon = activityInfo.loadIcon(packageManager)
-                } else {
-                    val packageInfo = packageManager.getPackageInfo(packageName, 0)
-                    appName = packageInfo.applicationInfo?.loadLabel(packageManager)?.toString() ?: packageName
-                    appIcon = packageInfo.applicationInfo?.loadIcon(packageManager) ?: continue
-                }
+                val packageInfo = packageManager.getPackageInfo(packageName, 0)
+                val appName = packageInfo.applicationInfo?.loadLabel(packageManager)?.toString() ?: packageName
+                val appIcon = packageInfo.applicationInfo?.loadIcon(packageManager) ?: continue
 
                 commonApps.add(CommonApp(packageName, appName, appIcon))
                 Log.d(TAG, "加载应用: $appName ($packageName)")
@@ -2099,12 +2084,29 @@ class CommonAppAdapter(
                         if (app.toggleOn) R.color.toggle_on_text else R.color.toggle_off_text
                     )
                 )
+            } else {
+                nameView.setTextColor(ContextCompat.getColor(itemView.context, android.R.color.black))
+            }
+
+            if (app.isTorch) {
+                // 手电筒：图标自含圆角底色，不再叠加背景（去掉灰边）；
+                // 开=原色亮起，关=灰色淡化，状态直观且无边框感
+                iconView.background = null
+                if (app.toggleOn) {
+                    iconView.colorFilter = null
+                    iconView.alpha = 1f
+                } else {
+                    iconView.colorFilter = PorterDuffColorFilter(TORCH_OFF_TINT, PorterDuff.Mode.SRC_IN)
+                    iconView.alpha = 0.55f
+                }
+            } else if (app.isToggle || app.isRemoteAssist) {
                 iconView.setBackgroundResource(
                     if (app.toggleOn) R.drawable.bg_toggle_on else R.drawable.bg_toggle_off
                 )
             } else {
-                nameView.setTextColor(ContextCompat.getColor(itemView.context, android.R.color.black))
                 iconView.background = null
+                iconView.colorFilter = null
+                iconView.alpha = 1f
             }
 
             val iconParams = iconView.layoutParams
@@ -2117,6 +2119,11 @@ class CommonAppAdapter(
             itemView.setOnClickListener {
                 listener(app)
             }
+        }
+
+        private companion object {
+            /** 手电筒关闭时的灰色色调（与 bg_toggle_off 同色，保证状态色一致） */
+            val TORCH_OFF_TINT = Color.rgb(0x9C, 0xA3, 0xAF)
         }
     }
 }
