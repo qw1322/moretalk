@@ -61,6 +61,10 @@ class RemoteAssistService : Service() {
         // 公网中继（家属 VPS）：手机隧道主动出站连接，绕过 CGNAT
         const val VPS_HOST = "216.23.93.14"
         const val VPS_PORT = 8899
+        /** H.264 硬编码实验通道开关（MediaCodec → /h264 → 家属页 WebCodecs 解码），默认开启 */
+        const val KEY_H264 = "remote_assist_h264"
+        /** 主配置（与抖音安心刷等共用） */
+        private const val PREF_MAIN = "OnePassPrefs"
         private const val CHANNEL_ID = "remote_assist"
         private const val NOTIFICATION_ID = 8890
         private const val FRAME_INTERVAL_MS = 100L
@@ -121,6 +125,7 @@ class RemoteAssistService : Service() {
     }
 
     private var mediaProjection: MediaProjection? = null
+    private var h264Streamer: H264Streamer? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var captureThread: HandlerThread? = null
@@ -162,20 +167,40 @@ class RemoteAssistService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // 看门狗：虚拟显示偶发停摆时重建。
-    // 停滞阈值 1500ms + 重建冷却 1500ms：兼容 realme（重建后约1s出帧）与一加/ColorOS
-    // （虚拟显示创建后出首帧可能较慢，若冷却太短会陷入"重建→未出帧→再重建"的风暴，永远无帧）。
+    /** H.264 重建限流：60s 内最多尝试 3 次，仍无输出则放弃 H.264 回退 JPEG（实验功能不拖垮远程协助） */
+    private var h264RebuildCount = 0
+    private var h264RebuildWindowStart = 0L
+
+    // 看门狗：采集偶发停摆时重建。停滞阈值 1500ms + 重建冷却 1500ms：兼容 realme
+    // （重建后约1s出帧）与一加/ColorOS（虚拟显示创建后出首帧可能较慢，若冷却太短会陷入
+    // "重建→未出帧→再重建"的风暴，永远无帧）。H.264 模式按编码输出时间戳检测并重建编码链路。
     private val watchdogRunnable = object : Runnable {
         private var lastRebuildAt = 0L
         override fun run() {
             if (running.get() && mediaProjection != null) {
                 val now = System.currentTimeMillis()
-                val stall = now - lastFrameAt
-                // 重建冷却：距上次重建不足 1500ms 不重建，给虚拟显示留出帧时间
+                val streamer = h264Streamer
+                val stall = if (streamer != null) now - streamer.lastOutputAt else now - lastFrameAt
                 if (stall > 1500 && now - lastRebuildAt > 1500) {
-                    Logger.w(TAG, "采集停滞 ${stall}ms，重建虚拟显示")
                     lastRebuildAt = now
-                    runCatching { createCapture(captureWidth, captureHeight, captureDensity) }
+                    if (streamer != null) {
+                        // H.264 链路限流重建：多次重建仍无输出 → 判定该设备 H.264 不可用，回退 JPEG 保底
+                        if (now - h264RebuildWindowStart > 60_000) {
+                            h264RebuildWindowStart = now
+                            h264RebuildCount = 0
+                        }
+                        h264RebuildCount++
+                        if (h264RebuildCount > 3) {
+                            Logger.w(TAG, "H.264 链路多次重建失败（${h264RebuildCount} 次），回退 JPEG 帧流")
+                            switchToJpeg()
+                        } else {
+                            Logger.w(TAG, "采集停滞 ${stall}ms，重建 H.264 编码链路（第 $h264RebuildCount 次）")
+                            runCatching { streamer.rebuild() }
+                        }
+                    } else {
+                        Logger.w(TAG, "采集停滞 ${stall}ms，重建虚拟显示")
+                        runCatching { createCapture(captureWidth, captureHeight, captureDensity) }
+                    }
                 }
             }
             mainHandler.postDelayed(this, 300)
@@ -252,6 +277,8 @@ class RemoteAssistService : Service() {
         mainHandler.removeCallbacks(watchdogRunnable)
         pollRunning.set(false)
         pollHandler?.removeCallbacksAndMessages(null)
+        runCatching { h264Streamer?.stop() }
+        h264Streamer = null
         runCatching { wsServer?.stop() }
         wsServer = null
         pollThread?.quitSafely()
@@ -321,7 +348,26 @@ class RemoteAssistService : Service() {
             // 必须先置 running 再建采集：首帧可能在 running=false 时到达而被丢弃
             running.set(true)
             isRunning = true
-            createCapture(width, height, metrics.densityDpi)
+            ensureTunnelOkHttp()
+            val useH264 = getSharedPreferences(PREF_MAIN, MODE_PRIVATE).getBoolean(KEY_H264, true)
+            if (useH264) {
+                // H.264 硬编码实验通道：虚拟显示 Surface 直连 MediaCodec（零拷贝），
+                // 输出分片由 H264Streamer 合批上传 VPS /h264，家属浏览器 WebCodecs 解码。
+                val s = H264Streamer(
+                    projection, width, height, metrics.densityDpi,
+                    tunnelOkHttp!!, tunnelRoom, VPS_HOST, VPS_PORT
+                )
+                h264Streamer = s
+                s.start()
+                if (!s.isAlive) {
+                    // 设备不支持/编解码器异常：立即回退 JPEG，不把远程协助拖进重建死循环
+                    Logger.w(TAG, "H.264 编码器不可用，回退 JPEG 帧流")
+                    h264Streamer = null
+                    createCapture(width, height, metrics.densityDpi)
+                }
+            } else {
+                createCapture(width, height, metrics.densityDpi)
+            }
 
             server = RemoteAssistServer(PORT, this)
             runCatching { server?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false) }
@@ -413,16 +459,26 @@ class RemoteAssistService : Service() {
      * 每轮循环：若有新帧则 POST /frame 上传；GET /cmd 拉取家属指令执行。
      * 短连接单次请求/响应，天然规避 CGNAT 长连接被运营商/路由器周期性重置的问题。
      */
+    private fun ensureTunnelOkHttp() {
+        if (tunnelOkHttp == null) {
+            tunnelOkHttp = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(10, TimeUnit.SECONDS)
+                .build()
+        }
+    }
+
+    /**
+     * 公网通道 v2：「手机上传帧 + 轮询指令」（HTTP 短连接）。
+     * 每轮循环：若有新帧则 POST /frame 上传；GET /cmd 拉取家属指令执行。
+     * 短连接单次请求/响应，天然规避 CGNAT 长连接被运营商/路由器周期性重置的问题。
+     * H.264 模式下帧上传由 H264Streamer 走 /h264 合批，此处仅 meta + 指令轮询。
+     */
     private fun startPollUpload() {
         if (pollRunning.get()) return
         pollRunning.set(true)
         try {
-            if (tunnelOkHttp == null) {
-                tunnelOkHttp = OkHttpClient.Builder()
-                    .connectTimeout(10, TimeUnit.SECONDS)
-                    .readTimeout(10, TimeUnit.SECONDS)
-                    .build()
-            }
+            ensureTunnelOkHttp()
             pollThread?.quitSafely()
             pollThread = HandlerThread("RemoteAssistPoll").apply { start() }
             pollHandler = Handler(pollThread!!.looper)
@@ -443,9 +499,9 @@ class RemoteAssistService : Service() {
                 uploadMeta()
                 metaUploaded = true
             }
-            // 1) 上传最新帧（仅当有新帧）
+            // 1) 上传最新帧（仅当有新帧；H.264 模式由 H264Streamer 独立上传 /h264）
             val jpeg = latestJpeg
-            if (jpeg != null && jpeg !== lastUploadedJpeg) {
+            if (h264Streamer == null && jpeg != null && jpeg !== lastUploadedJpeg) {
                 uploadFrame(jpeg)
                 lastUploadedJpeg = jpeg
             }
@@ -455,6 +511,68 @@ class RemoteAssistService : Service() {
             Logger.w("$TAG 轮询异常: ${e.message}")
         }
         pollHandler?.postDelayed(::pollLoop, 150)
+    }
+
+    /**
+     * 家属页能力协商：在 H.264 硬编码流与 JPEG 帧流之间实时切换。
+     * 由 wsHandler 的 "mode" 指令触发（页面按 WebCodecs 可用性上报），主线程串行执行避免并发建链。
+     * 防抖：同方向重复指令忽略；异方向切换最小间隔 3s（多标签页/页面重复加载的指令不会再互相打架）。
+     */
+    @Volatile
+    private var lastModeSwitchAt = 0L
+
+    fun switchMode(h264: Boolean) {
+        mainHandler.post {
+            if (!running.get()) return@post
+            if (h264 && h264Streamer != null) return@post          // 已是 H.264，忽略重复指令
+            if (!h264 && h264Streamer == null) return@post         // 已是 JPEG，忽略重复指令
+            val now = System.currentTimeMillis()
+            if (now - lastModeSwitchAt < 3000) {
+                Logger.d(TAG, "模式切换防抖中，忽略 mode=${if (h264) "h264" else "mjpeg"} 指令")
+                return@post
+            }
+            lastModeSwitchAt = now
+            if (h264) switchToH264() else switchToJpeg()
+        }
+    }
+
+    /** H.264 模式（MediaCodec Surface 直连虚拟显示，硬编码） */
+    private fun switchToH264() {
+        if (h264Streamer != null) return
+        Logger.d(TAG, "家属页支持 WebCodecs，切换 H.264 硬编码流")
+        runCatching { imageReader?.close() }
+        imageReader = null
+        runCatching { virtualDisplay?.release() }
+        virtualDisplay = null
+        ensureTunnelOkHttp()
+        val s = H264Streamer(
+            mediaProjection!!, captureWidth, captureHeight, captureDensity,
+            tunnelOkHttp!!, tunnelRoom, VPS_HOST, VPS_PORT
+        )
+        h264Streamer = s
+        s.start()
+        if (!s.isAlive) {
+            // 编码器起不来（设备兼容问题）：清字段回退 JPEG，避免"已启动"假象卡死后续 mode 指令
+            Logger.w(TAG, "H.264 编码器不可用，回退 JPEG 帧流")
+            h264Streamer = null
+            createCapture(captureWidth, captureHeight, captureDensity)
+            return
+        }
+        h264RebuildWindowStart = System.currentTimeMillis()
+        h264RebuildCount = 0
+    }
+
+    /** JPEG 模式（ImageReader + 软编码，兼容兜底） */
+    private fun switchToJpeg() {
+        if (h264Streamer == null) {
+            // 看门狗回退路径：H.264 未启动时也要确保 JPEG 采集存在
+            if (imageReader == null) createCapture(captureWidth, captureHeight, captureDensity)
+            return
+        }
+        Logger.d(TAG, "切换 JPEG 帧流")
+        runCatching { h264Streamer?.stop() }
+        h264Streamer = null
+        createCapture(captureWidth, captureHeight, captureDensity)
     }
 
     /** 上报真实屏幕物理分辨率，供家属网页做点击/滑动坐标换算 */
