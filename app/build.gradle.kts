@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.onepass"
         minSdk = 24
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.9.1-h264-exp"
+        versionCode = 8
+        versionName = "1.8.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

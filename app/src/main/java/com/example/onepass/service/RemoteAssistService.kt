@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.ImageFormat
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -21,6 +22,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
@@ -29,6 +31,7 @@ import com.example.onepass.utils.Logger
 import com.google.android.accessibility.selecttospeak.SelectToSpeakService
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoWSD
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -41,12 +44,24 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 远程协助（P1/P2 局域网版）：
  * - MediaProjection 录屏 → MJPEG 流（http://<手机IP>:8890/stream.mjpeg）
  * - 家属浏览器打开 http://<手机IP>:8890 实时观看
  * - 点击画面 → 无障碍手势注入实现远程控制（/tap?x=&y=）
+ *
+ * 公网通道（v2.1 · 延迟优化版）：
+ * - 采集线程只负责拿帧：默认 RGBA 软件编码（硬件 JPEG 探测默认关闭——realme 上会
+ *   native 崩溃，见 ENABLE_HW_JPEG_PROBE 说明），编码在独立线程做，不阻塞采集。
+ * - 帧上传改事件驱动：新帧一到立即 POST（不低于 50ms 保底），失败退避 100ms 重试。
+ * - 指令通道独立 50ms 高频轮询，与帧上传互不拖累（点击→执行快 3 倍）。
+ * - 网络自适应：延迟高自动降 5fps/JPEG40，延迟低升 15fps/JPEG80。
+ * - HTTP keep-alive：手机与中继共用一条 TCP 连接连续请求，省去每请求握手/告别
+ *   各 1 个跨境 RTT（OkHttp 对 HTTP/1.1 默认保持连接，中继端需 protocol_version="HTTP/1.1"）。
+ * - v1.8.2 修复：看门狗阈值放宽（8s），杜绝真机（slow 出帧 ~1fps）上 1.5s 停滞即重建
+ *   造成的重建风暴——重建会打断采集，是家属端 3~4s 延迟的主因。
  */
 class RemoteAssistService : Service() {
 
@@ -61,16 +76,69 @@ class RemoteAssistService : Service() {
         // 公网中继（家属 VPS）：手机隧道主动出站连接，绕过 CGNAT
         const val VPS_HOST = "216.23.93.14"
         const val VPS_PORT = 8899
-        /** H.264 硬编码实验通道开关（MediaCodec → /h264 → 家属页 WebCodecs 解码），默认开启 */
-        const val KEY_H264 = "remote_assist_h264"
-        /** 主配置（与抖音安心刷等共用） */
-        private const val PREF_MAIN = "OnePassPrefs"
         private const val CHANNEL_ID = "remote_assist"
         private const val NOTIFICATION_ID = 8890
-        private const val FRAME_INTERVAL_MS = 100L
-        private const val JPEG_QUALITY = 60
         // 0.5x 分辨率：帧体积与编码耗时减半，降低端到端延迟（不影响帧率上限）
         private const val CAPTURE_SCALE = 0.5f
+
+        // ===== 采集模式开关（v2.1 / v1.8.1 修复）=====
+        /**
+         * 是否启用 ImageFormat.JPEG 硬件直出探测。
+         *
+         * ⚠️ v1.8.0 曾默认启用：在 realme GT Neo5 SE（骁龙+ColorOS）上，
+         * ImageReader.newInstance(JPEG) 创建不报错，但接到 MediaProjection 虚拟显示后
+         * 底层 SurfaceFlinger 的硬件 JPEG 路径 native 崩溃（SIGSEGV，Java 层无法捕获）
+         * → 启动远程协助数秒内整个进程"卡退"。
+         *
+         * 现默认 false：一律走 RGBA 软件编码（编码线程分离、事件驱动上传/独立指令轮询/
+         * 自适应等其余优化不受影响）。探测代码保留，未来在验证过支持的机型上可置 true。
+         */
+        private const val ENABLE_HW_JPEG_PROBE = false
+        /** 局域网 MJPEG 流帧间隔（与公网自适应无关，保持原节奏） */
+        private const val LAN_MJPEG_INTERVAL_MS = 100L
+
+        // ===== 公网通道参数（v2.1）=====
+        /** 指令通道独立轮询周期：只传几个字节，代价极小，操作手感直接受益 */
+        private const val CMD_POLL_INTERVAL_MS = 50L
+        /** 帧上传最小间隔（保底节流）：新帧再急也至少等 50ms，防 60fps 采集打爆链路 */
+        private const val FRAME_MIN_UPLOAD_INTERVAL_MS = 50L
+        /** 上传失败退避：失败后至少等这么久再试 */
+        private const val UPLOAD_FAIL_BACKOFF_MS = 100L
+        /** 无新帧时上传循环的轻度轮询周期（很小，反正也不占流量） */
+        private const val UPLOAD_LOOP_POLL_MS = 20L
+        /** 编码线程无任务时的等待超时 */
+        private const val ENCODE_WAIT_TIMEOUT_MS = 100L
+        /** 上传线程等新帧的最大等待（有新帧时 notify 立即唤醒，不为零） */
+        private const val FRAME_WAIT_TIMEOUT_MS = 200L
+        /**
+         * 保底上传间隔（v1.8.4）：虚拟显示在屏幕完全静止时不出帧（真机实测），
+         * 若"有新帧才上传"，家属端画面会冻结数秒。每此间隔无新帧也把当前帧重新上传，
+         * 刷新中继时间戳 → 家属端画面持续更新（内容相同但时间戳新鲜，X-Age 保持 <1s）。
+         */
+        private const val PACE_UPLOAD_INTERVAL_MS = 800L
+
+        // ===== 网络自适应（v2.1）=====
+        private const val ADAPT_EVAL_INTERVAL_MS = 2000L
+        /** 连续 N 次评估达标才升档（滞回，防抖动来回跳） */
+        private const val ADAPT_UP_NEEDED = 2
+        /** 平滑 RTT 超过该值视为"延迟高"（跨境链路） */
+        private const val RTT_BAD_MS = 400.0
+        /** 平滑 RTT 低于该值视为"延迟低" */
+        private const val RTT_GOOD_MS = 160.0
+        /** 5 秒窗口内失败次数达到该值视为"网络差" */
+        private const val FAIL_BAD_COUNT = 3
+
+        // ===== 看门狗（v1.8.6 修复：周期性重建取快照）=====
+        /**
+         * 真机（realme GT Neo5 SE / ColorOS）关键发现：ImageReader 是被动消费者，
+         * 虚拟显示投递几帧后就永久停摆（SF 不再向 ImageReader 投帧，屏幕怎么变都无效），
+         * 但**每次重建虚拟显示都会拿到一张"当前屏幕快照"**。因此这里采用"周期重建"策略：
+         * 无新采集帧约 1.2s 就重建一次虚拟显示 → 持续拿到新快照上传，家属端画面得以更新。
+         * （v1.8.4 曾用 8s 阈值 + 以"上传活性"抑制重建，结果画面内容永久冻结——放弃该策略。）
+         */
+        private const val WATCHDOG_STALL_MS = 1200L
+        /** 重建冷却：给重建后出帧留时间，避免同一虚拟显示实例未出帧就再次重建 */
+        private const val WATCHDOG_REBUILD_COOLDOWN_MS = 1600L
 
         @Volatile
         var isRunning: Boolean = false
@@ -124,8 +192,17 @@ class RemoteAssistService : Service() {
         }
     }
 
+    /** 采集模式：HW_JPEG = 硬件 JPEG 直出（无编码开销）；RGBA = 软件编码线程 */
+    internal enum class CaptureMode { HW_JPEG, RGBA }
+
+    /** 网络自适应档位：帧率 / JPEG 质量 */
+    internal enum class Tier(val fps: Int, val quality: Int) {
+        SLOW(5, 40),
+        MID(10, 60),
+        FAST(15, 80)
+    }
+
     private var mediaProjection: MediaProjection? = null
-    private var h264Streamer: H264Streamer? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var captureThread: HandlerThread? = null
@@ -146,6 +223,47 @@ class RemoteAssistService : Service() {
     @Volatile
     internal var lastFrameAt = 0L
     private var imageArriveCount = 0L
+    /** 自上次重建以来是否收到过有效帧（看门狗据此区分"硬件JPEG不支持"与"真停滞"） */
+    @Volatile
+    private var imageSawSinceRebuild = false
+    /** 连续无帧停滞计数：硬件JPEG模式连续 2 次重建仍无帧 → 永久回退 RGBA */
+    private var noImageStallCount = 0
+
+    // ===== 帧发布/消费协调（v2.1）=====
+    private val frameLock = Object()
+    /** 帧代数：每次发布新 JPEG 自增；上传线程按代数判断"有新帧"（比引用比较可靠） */
+    private val frameGen = AtomicLong(0)
+    /** 已成功上传到中继的帧代数 */
+    private val uploadedGen = AtomicLong(0)
+    /** 待编码的 RGBA 帧（单槽 latest-wins：新帧到来丢弃未编码旧帧，保证只看最新） */
+    private var pendingRgba: Image? = null
+    /** nullable=首次运行还在探测；HW_JPEG / RGBA 由首帧实际格式或异常定型 */
+    @Volatile
+    private var captureMode: CaptureMode? = null
+
+    // ===== 编码线程（v2.1：编码与采集分离）=====
+    private var encodeThread: HandlerThread? = null
+    private var encodeHandler: Handler? = null
+    private var encodeCount = 0L
+
+    // ===== 公网上传线程（v2.1：事件驱动，新帧立即传；v1.8.4：无新帧也保底刷新）=====
+    private var uploadThread: HandlerThread? = null
+    private var uploadHandler: Handler? = null
+    private var lastUploadAt = 0L
+    private var nextUploadAllowedAt = 0L
+    /** 最近一次上传成功时刻（v1.8.4：看门狗据此判断"通道还活着"，静止时不再误重建） */
+    @Volatile
+    private var lastUploadSuccessAt = 0L
+
+    // ===== 网络自适应状态 =====
+    @Volatile
+    internal var tier = Tier.MID
+    @Volatile
+    internal var ewmaRttMs = 0.0
+    private var failWindowCount = 0
+    private var failWindowStart = 0L
+    private var lastAdaptAt = 0L
+    private var upStreak = 0
 
     // WebSocket 控制服务（LAN）与公网「上传+轮询」客户端
     private var wsServer: NanoWsdServer? = null
@@ -157,9 +275,6 @@ class RemoteAssistService : Service() {
     /** 是否已上报屏幕物理分辨率（家属网页据此换算点击坐标） */
     @Volatile
     private var metaUploaded = false
-    /** 上次上报的帧（避免每轮重复 POST 相同帧，仅新帧才上传） */
-    @Volatile
-    private var lastUploadedJpeg: ByteArray? = null
 
     /** UPnP 映射后的公网访问地址（若成功） */
     @Volatile
@@ -167,40 +282,36 @@ class RemoteAssistService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** H.264 重建限流：60s 内最多尝试 3 次，仍无输出则放弃 H.264 回退 JPEG（实验功能不拖垮远程协助） */
-    private var h264RebuildCount = 0
-    private var h264RebuildWindowStart = 0L
-
-    // 看门狗：采集偶发停摆时重建。停滞阈值 1500ms + 重建冷却 1500ms：兼容 realme
-    // （重建后约1s出帧）与一加/ColorOS（虚拟显示创建后出首帧可能较慢，若冷却太短会陷入
-    // "重建→未出帧→再重建"的风暴，永远无帧）。H.264 模式按编码输出时间戳检测并重建编码链路。
+    // 看门狗：v1.8.6 起为"周期重建取快照"策略。
+    // 真机（realme/ColorOS）关键发现：ImageReader 是被动消费者，虚拟显示投递几帧后
+    // 永久停摆（SF 不再投帧），但每次重建虚拟显示都会拿到一张"当前屏幕快照"。
+    // 因此无新采集帧约 1.2s 即重建，持续取新快照上传，家属端画面得以更新。
     private val watchdogRunnable = object : Runnable {
         private var lastRebuildAt = 0L
+        private var rebuildCount = 0
         override fun run() {
             if (running.get() && mediaProjection != null) {
                 val now = System.currentTimeMillis()
-                val streamer = h264Streamer
-                val stall = if (streamer != null) now - streamer.lastOutputAt else now - lastFrameAt
-                if (stall > 1500 && now - lastRebuildAt > 1500) {
-                    lastRebuildAt = now
-                    if (streamer != null) {
-                        // H.264 链路限流重建：多次重建仍无输出 → 判定该设备 H.264 不可用，回退 JPEG 保底
-                        if (now - h264RebuildWindowStart > 60_000) {
-                            h264RebuildWindowStart = now
-                            h264RebuildCount = 0
-                        }
-                        h264RebuildCount++
-                        if (h264RebuildCount > 3) {
-                            Logger.w(TAG, "H.264 链路多次重建失败（${h264RebuildCount} 次），回退 JPEG 帧流")
-                            switchToJpeg()
-                        } else {
-                            Logger.w(TAG, "采集停滞 ${stall}ms，重建 H.264 编码链路（第 $h264RebuildCount 次）")
-                            runCatching { streamer.rebuild() }
+                // v1.8.6：重建判定只基于"采集帧"（lastFrameAt）——保底上传的时间戳活性
+                // 不抑制重建；无新采集帧即周期性重建虚拟显示以获取新屏幕快照。
+                val stall = now - lastFrameAt
+                if (stall > WATCHDOG_STALL_MS && now - lastRebuildAt > WATCHDOG_REBUILD_COOLDOWN_MS) {
+                    if (!imageSawSinceRebuild) {
+                        // 长时间一帧未出：若还停留在"JPEG直出"探测/模式，判定该设备不支持，永久降级软件编码
+                        noImageStallCount++
+                        if ((captureMode == null || captureMode == CaptureMode.HW_JPEG) && noImageStallCount >= 2) {
+                            Logger.w(TAG, "ImageFormat.JPEG 直出疑似不支持（连续重建仍无帧），锁定 RGBA 软件编码")
+                            captureMode = CaptureMode.RGBA
                         }
                     } else {
-                        Logger.w(TAG, "采集停滞 ${stall}ms，重建虚拟显示")
-                        runCatching { createCapture(captureWidth, captureHeight, captureDensity) }
+                        noImageStallCount = 0
                     }
+                    rebuildCount++
+                    if (rebuildCount <= 3 || rebuildCount % 10 == 0) {
+                        Logger.w(TAG, "采集停滞 ${stall}ms，重建虚拟显示 #$rebuildCount（mode=${captureMode ?: "probe"}）")
+                    }
+                    lastRebuildAt = now
+                    runCatching { createCapture(captureWidth, captureHeight, captureDensity) }
                 }
             }
             mainHandler.postDelayed(this, 300)
@@ -274,15 +385,21 @@ class RemoteAssistService : Service() {
     override fun onDestroy() {
         running.set(false)
         isRunning = false
-        mainHandler.removeCallbacks(watchdogRunnable)
         pollRunning.set(false)
+        mainHandler.removeCallbacks(watchdogRunnable)
+        // 唤醒可能在等待中的编码/上传线程，让它们尽快退出
+        synchronized(frameLock) {
+            frameLock.notifyAll()
+        }
         pollHandler?.removeCallbacksAndMessages(null)
-        runCatching { h264Streamer?.stop() }
-        h264Streamer = null
+        pollHandler = null
+        uploadHandler?.removeCallbacksAndMessages(null)
+        uploadHandler = null
+        encodeHandler?.removeCallbacksAndMessages(null)
+        encodeHandler = null
         runCatching { wsServer?.stop() }
         wsServer = null
-        pollThread?.quitSafely()
-        pollThread = null
+        // v1.8.5：pacer 已停用（代码保留供参考，见 startFramePacer）
         runCatching { tunnelOkHttp?.dispatcher?.executorService?.shutdown() }
         tunnelOkHttp = null
         runCatching { screenWakeLock?.let { if (it.isHeld) it.release() } }
@@ -297,7 +414,19 @@ class RemoteAssistService : Service() {
         mediaProjection = null
         captureThread?.quitSafely()
         captureThread = null
-        latestJpeg = null
+        encodeThread?.quitSafely()
+        encodeThread = null
+        uploadThread?.quitSafely()
+        uploadThread = null
+        pollThread?.quitSafely()
+        pollThread = null
+        synchronized(frameLock) {
+            runCatching { pendingRgba?.close() }
+            pendingRgba = null
+            latestJpeg = null
+        }
+        frameGen.set(0)
+        uploadedGen.set(0)
         super.onDestroy()
     }
 
@@ -348,26 +477,11 @@ class RemoteAssistService : Service() {
             // 必须先置 running 再建采集：首帧可能在 running=false 时到达而被丢弃
             running.set(true)
             isRunning = true
-            ensureTunnelOkHttp()
-            val useH264 = getSharedPreferences(PREF_MAIN, MODE_PRIVATE).getBoolean(KEY_H264, true)
-            if (useH264) {
-                // H.264 硬编码实验通道：虚拟显示 Surface 直连 MediaCodec（零拷贝），
-                // 输出分片由 H264Streamer 合批上传 VPS /h264，家属浏览器 WebCodecs 解码。
-                val s = H264Streamer(
-                    projection, width, height, metrics.densityDpi,
-                    tunnelOkHttp!!, tunnelRoom, VPS_HOST, VPS_PORT
-                )
-                h264Streamer = s
-                s.start()
-                if (!s.isAlive) {
-                    // 设备不支持/编解码器异常：立即回退 JPEG，不把远程协助拖进重建死循环
-                    Logger.w(TAG, "H.264 编码器不可用，回退 JPEG 帧流")
-                    h264Streamer = null
-                    createCapture(width, height, metrics.densityDpi)
-                }
-            } else {
-                createCapture(width, height, metrics.densityDpi)
-            }
+            // 独立编码线程只建一次（采集可被看门狗反复重建，编码线程不能重建）
+            encodeThread = HandlerThread("RemoteAssistEncode").apply { start() }
+            encodeHandler = Handler(encodeThread!!.looper)
+            encodeHandler?.post(::encodeLoop)
+            createCapture(width, height, metrics.densityDpi)
 
             server = RemoteAssistServer(PORT, this)
             runCatching { server?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false) }
@@ -378,8 +492,9 @@ class RemoteAssistService : Service() {
             Logger.d(TAG, "HTTP 服务已启动 :$PORT")
             // WebSocket 控制服务（LAN 页面 + 控制）
             startWsServer()
-            // 公网通道：手机上传帧到 VPS + 轮询拉取家属指令（短连接，规避 CGNAT 长连接被重置）
-            startPollUpload()
+            // 公网通道 v2.1：事件驱动帧上传 + 独立 50ms 指令轮询（HTTP keep-alive 长连接）
+            startTunnel()
+            // v1.8.5：不再启动 pacer 悬浮窗——实测无法驱动虚拟显示且可能有干扰，保底上传已解决家属端刷新
             // 尝试 UPnP 端口映射（NAT 外网直连）
             val localIp = getLocalIpAddress()
             if (localIp != null) {
@@ -397,37 +512,80 @@ class RemoteAssistService : Service() {
 
     /**
      * 创建/重建采集链路（ImageReader + 虚拟显示）。可反复调用以自愈采集停滞。
+     * 默认 RGBA_8888 软件编码（v1.8.1：硬件 JPEG 探测默认关闭——realme GT Neo5 SE
+     * 上会 native 崩溃，见 ENABLE_HW_JPEG_PROBE 说明；探测代码保留待验证机型启用）。
      */
     private fun createCapture(width: Int, height: Int, densityDpi: Int) {
         runCatching { imageReader?.close() }
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        // 仅当全局开关开启且尚未定型时才尝试硬件 JPEG；默认走 RGBA
+        val wantHw = ENABLE_HW_JPEG_PROBE && captureMode == null
+        val format = if (wantHw) ImageFormat.JPEG else PixelFormat.RGBA_8888
+        val reader = try {
+            ImageReader.newInstance(width, height, format, 2)
+        } catch (e: Exception) {
+            if (wantHw) {
+                Logger.w(TAG, "ImageFormat.JPEG 创建失败（${e.message}），回退 RGBA 软件编码")
+                captureMode = CaptureMode.RGBA
+                ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            } else throw e
+        }
+        imageReader = reader
+        // ⚠️ v1.8.5：不要对 ImageReader.surface 调用 setFrameRate——真机（realme/ColorOS）
+        // 实测会与虚拟显示投帧机制冲突，导致启动后出几帧就彻底停摆（屏幕怎么变都无新帧）。
         captureThread?.quitSafely()
         captureThread = HandlerThread("RemoteAssistCapture").apply { start() }
         captureHandler = Handler(captureThread!!.looper)
-        imageReader?.setOnImageAvailableListener({ reader ->
+        imageSawSinceRebuild = false
+
+        // 采集回调只做两件事：节流 + 拿帧。编码一律不在此线程做。
+        //   - HW_JPEG 模式：直接把 JPEG 字节发布给上传线程（无编码）
+        //   - RGBA 模式：交给编码线程做 latest-wins 软件编码（新帧自动丢旧帧）
+        reader.setOnImageAvailableListener({ r ->
             imageArriveCount++
             if (imageArriveCount <= 5) {
                 Logger.d(TAG, "图像到达 #$imageArriveCount")
             }
             if (!running.get()) return@setOnImageAvailableListener
             val now = System.currentTimeMillis()
-            if (now - lastFrameAt < FRAME_INTERVAL_MS) return@setOnImageAvailableListener
+            if (now - lastFrameAt < adaptiveIntervalMs()) return@setOnImageAvailableListener
             lastFrameAt = now
-            val image = reader.acquireLatestImage()
+            imageSawSinceRebuild = true
+            val image = r.acquireLatestImage()
             if (image == null) {
                 if (imageArriveCount <= 5) Logger.w(TAG, "acquireLatestImage 返回 null")
                 return@setOnImageAvailableListener
             }
             runCatching {
-                val jpeg = imageToJpeg(image, JPEG_QUALITY)
-                if (jpeg != null && jpeg.isNotEmpty()) {
-                    latestJpeg = jpeg
-                    if (imageArriveCount <= 5) Logger.d(TAG, "JPEG 帧 ${jpeg.size}B")
-                } else {
-                    if (imageArriveCount <= 5) Logger.w(TAG, "JPEG 为空，原始尺寸 ${image.width}x${image.height}")
+                // 首个帧按实际格式定型：设备若忽略 JPEG 请求返回 RGBA，直接锁定软件编码
+                if (captureMode == null) {
+                    captureMode =
+                        if (image.format == ImageFormat.JPEG) CaptureMode.HW_JPEG else CaptureMode.RGBA
+                    Logger.d(TAG, "采集模式定档：${captureMode}")
                 }
-            }.onFailure { e -> Logger.w("$TAG 帧处理失败: ${e.message}") }
-            image.close()
+                when (captureMode) {
+                    CaptureMode.HW_JPEG -> {
+                        if (image.format == ImageFormat.JPEG) {
+                            try {
+                                val jpeg = extractJpeg(image)
+                                if (jpeg.isNotEmpty()) publishFrame(jpeg)
+                            } finally {
+                                image.close()
+                            }
+                        } else {
+                            // 设备实际返回非 JPEG：本会话永久回退软件编码（防御性兜底）
+                            captureMode = CaptureMode.RGBA
+                            Logger.w(TAG, "JPEG 模式实得 format=${image.format}，回退 RGBA 编码")
+                            enqueueRgba(image)
+                        }
+                    }
+
+                    CaptureMode.RGBA -> enqueueRgba(image)
+                    null -> image.close() // 理论上不可达
+                }
+            }.onFailure { e ->
+                Logger.w("$TAG 帧处理失败: ${e.message}")
+                runCatching { image.close() }
+            }
         }, captureHandler)
 
         runCatching { virtualDisplay?.release() }
@@ -437,12 +595,96 @@ class RemoteAssistService : Service() {
             height,
             densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
+            reader.surface,
             null,
             null
         )
         // 注意：不要在这里初始化 lastFrameAt！首帧可能与节流时间戳撞车被丢弃
-        Logger.d(TAG, "虚拟显示已重建 ${width}x$height")
+        Logger.d(TAG, "虚拟显示已重建 ${width}x$height（mode=${captureMode ?: "probe"}）")
+    }
+
+    /** 自适应帧间隔：1000/当前档位帧率（5~15fps → 200ms~66ms） */
+    private fun adaptiveIntervalMs(): Long = (1000L / tier.fps).coerceAtLeast(40L)
+
+    /** 发布一帧 JPEG：写入 latestJpeg 并推进代数，唤醒等待中的上传线程 */
+    private fun publishFrame(jpeg: ByteArray) {
+        synchronized(frameLock) {
+            latestJpeg = jpeg
+            frameGen.incrementAndGet()
+            frameLock.notifyAll()
+        }
+    }
+
+    /** 把 RGBA 帧交给编码线程（单槽 latest-wins：新帧到来丢弃未编码旧帧） */
+    private fun enqueueRgba(image: Image) {
+        synchronized(frameLock) {
+            runCatching { pendingRgba?.close() }
+            pendingRgba = image
+            frameLock.notifyAll()
+        }
+    }
+
+    /** 硬件 JPEG 直出：Image 只有一个 plane，Buffer 里就是完整 JPEG 字节 */
+    private fun extractJpeg(image: Image): ByteArray {
+        val buffer = image.planes[0].buffer
+        val out = ByteArray(buffer.remaining())
+        buffer.get(out)
+        return out
+    }
+
+    /** 编码线程主循环：最新帧一到就编码为 JPEG（软件路径），空闲时轻量等待 */
+    private fun encodeLoop() {
+        if (!running.get()) return
+        var image: Image? = null
+        synchronized(frameLock) {
+            while (running.get() && pendingRgba == null) {
+                try {
+                    frameLock.wait(ENCODE_WAIT_TIMEOUT_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+            image = pendingRgba
+            pendingRgba = null
+        }
+        if (image != null) {
+            val img = image
+            val jpeg = runCatching { imageToJpeg(img, tier.quality) }.getOrNull()
+            runCatching { img.close() }
+            if (jpeg != null && jpeg.isNotEmpty()) publishFrame(jpeg)
+        }
+        encodeHandler?.post(::encodeLoop)
+    }
+
+    private fun imageToJpeg(image: Image, quality: Int): ByteArray? {
+        val t0 = SystemClock.elapsedRealtime()
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        val rowPadding = rowStride - pixelStride * image.width
+        val bitmap = Bitmap.createBitmap(
+            image.width + rowPadding / pixelStride,
+            image.height,
+            Bitmap.Config.ARGB_8888
+        )
+        bitmap.copyPixelsFromBuffer(buffer)
+        val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+        val baos = ByteArrayOutputStream()
+        val ok = cropped.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+        bitmap.recycle()
+        cropped.recycle()
+        val t1 = SystemClock.elapsedRealtime()
+        val n = ++encodeCount
+        // 日志收敛：前 5 次 + 每 300 帧记录一次，避免每帧打日志拖慢链路
+        if (n <= 5 || n % 300 == 0L) {
+            Logger.d(TAG, "编码完成 ok=$ok size=${baos.size()} 耗时${t1 - t0}ms q=$quality")
+        }
+        if (!ok) {
+            Logger.w(TAG, "JPEG 压缩失败（返回 false）")
+            return null
+        }
+        return baos.toByteArray()
     }
 
     // ==================== WebSocket 控制（LAN + 公网隧道） ====================
@@ -454,130 +696,121 @@ class RemoteAssistService : Service() {
         Logger.d(TAG, "WS 控制服务已启动 :$WS_PORT，房间 $tunnelRoom")
     }
 
-    /**
-     * 公网通道 v2：「手机上传帧 + 轮询指令」（HTTP 短连接）。
-     * 每轮循环：若有新帧则 POST /frame 上传；GET /cmd 拉取家属指令执行。
-     * 短连接单次请求/响应，天然规避 CGNAT 长连接被运营商/路由器周期性重置的问题。
-     */
-    private fun ensureTunnelOkHttp() {
-        if (tunnelOkHttp == null) {
-            tunnelOkHttp = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .build()
-        }
-    }
+    // ==================== 公网通道 v2.1（事件驱动上传 + 独立高频指令轮询） ====================
+    //
+    // 与原 v2（固定 150ms 一轮：上传帧+拉指令）相比：
+    //  - 帧上传：新帧一到立即 POST，仅保留 50ms 保底 → 平均上传延迟由 ~75ms 降到 ~15ms；
+    //  - 指令轮询：独立线程 50ms 高频 GET，点击→执行不再被大帧上传拖累；
+    //  - 失败退避：上传失败等 100ms 再试，网络抖动不空转；
+    //  - keep-alive：OkHttp 对 HTTP/1.1 默认保持连接（BridgeInterceptor 自动携带
+    //    Connection: keep-alive），配合中继 protocol_version="HTTP/1.1"，同一 TCP 连接
+    //    连续承载全部请求，每请求省去握手+告别各 1 个跨境 RTT（~140ms）。
 
-    /**
-     * 公网通道 v2：「手机上传帧 + 轮询指令」（HTTP 短连接）。
-     * 每轮循环：若有新帧则 POST /frame 上传；GET /cmd 拉取家属指令执行。
-     * 短连接单次请求/响应，天然规避 CGNAT 长连接被运营商/路由器周期性重置的问题。
-     * H.264 模式下帧上传由 H264Streamer 走 /h264 合批，此处仅 meta + 指令轮询。
-     */
-    private fun startPollUpload() {
+    private fun startTunnel() {
         if (pollRunning.get()) return
         pollRunning.set(true)
         try {
-            ensureTunnelOkHttp()
+            ensureTunnelClient()
             pollThread?.quitSafely()
-            pollThread = HandlerThread("RemoteAssistPoll").apply { start() }
+            pollThread = HandlerThread("RemoteAssistCtl").apply { start() }
             pollHandler = Handler(pollThread!!.looper)
-            pollHandler?.post(::pollLoop)
-            Logger.d(TAG, "公网上传+轮询已启动，房间 $tunnelRoom")
+            uploadThread?.quitSafely()
+            uploadThread = HandlerThread("RemoteAssistUp").apply { start() }
+            uploadHandler = Handler(uploadThread!!.looper)
+            pollHandler?.post(::commandLoop)
+            uploadHandler?.post(::uploadLoop)
+            Logger.d(TAG, "公网通道已启动（事件驱动上传 + ${CMD_POLL_INTERVAL_MS}ms 指令轮询），房间 $tunnelRoom")
         } catch (e: Exception) {
             pollRunning.set(false)
-            Logger.e(TAG, "上传轮询启动失败: ${e.message}")
+            Logger.e(TAG, "公网通道启动失败: ${e.message}")
         }
     }
 
-    /** 每轮：上传新帧 + 拉取并执行家属指令，然后调度下一轮（约 150ms） */
-    private fun pollLoop() {
+    /** 共享 OkHttpClient：连接池复用（keep-alive）。两个通道各自顺序 execute，池自动保持 2 条长连接 */
+    private fun ensureTunnelClient(): OkHttpClient {
+        tunnelOkHttp?.let { return it }
+        return OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .connectionPool(ConnectionPool(4, 60, TimeUnit.SECONDS))
+            .build().also { tunnelOkHttp = it }
+    }
+
+    /** 指令通道：独立 50ms 高频轮询，只传几个字节，与帧上传互不影响 */
+    private fun commandLoop() {
         if (!pollRunning.get() || !running.get()) return
-        try {
-            // 0) 首次上报屏幕物理分辨率（家属网页据此把画面坐标换算成真实像素）
-            if (!metaUploaded && screenWidth > 0 && screenHeight > 0) {
-                uploadMeta()
+        pollCommands()
+        pollHandler?.postDelayed(::commandLoop, CMD_POLL_INTERVAL_MS)
+    }
+
+    /** 帧上传线程：有新帧立即传，50ms 保底节流，失败退避 100ms；无新帧每 800ms 保底刷新一次 */
+    private fun uploadLoop() {
+        if (!running.get()) return
+        var gen = 0L
+        var jpeg: ByteArray? = null
+        synchronized(frameLock) {
+            // 等新帧（notifyAll 立即唤醒）；每 200ms 醒来一次，累计达保底间隔后即使无新帧
+            // 也退出 → 上传当前帧刷新中继时间戳，防止虚拟显示静止不出帧时家属端画面冻结
+            var waited = 0L
+            while (running.get() && frameGen.get() == uploadedGen.get() && waited < PACE_UPLOAD_INTERVAL_MS) {
+                try {
+                    frameLock.wait(FRAME_WAIT_TIMEOUT_MS)
+                    waited += FRAME_WAIT_TIMEOUT_MS
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+            gen = frameGen.get()
+            jpeg = latestJpeg
+        }
+        if (!running.get()) return
+        if (jpeg == null) {
+            scheduleUpload(UPLOAD_LOOP_POLL_MS)
+            return
+        }
+        val now = System.currentTimeMillis()
+        val waitMs = maxOf(
+            FRAME_MIN_UPLOAD_INTERVAL_MS - (now - lastUploadAt),
+            nextUploadAllowedAt - now,
+            0L
+        )
+        if (waitMs > 0) {
+            scheduleUpload(waitMs)
+            return
+        }
+        val t0 = SystemClock.elapsedRealtime()
+        val ok = uploadFrame(jpeg)
+        val rtt = SystemClock.elapsedRealtime() - t0
+        val t1 = System.currentTimeMillis()
+        if (ok) {
+            // 保底刷新时 gen==uploadedGen，set 无副作用；期间若来了新帧，下轮立即上传
+            uploadedGen.set(gen)
+            lastUploadAt = t1
+            lastUploadSuccessAt = t1
+            ewmaRttMs = if (ewmaRttMs <= 0.0) rtt.toDouble() else ewmaRttMs * 0.7 + rtt * 0.3
+            resetFailWindow(t1)
+            // 首次上传成功后顺带上报屏幕物理分辨率（等下不阻塞首帧，网络已确认可用）
+            if (!metaUploaded && screenWidth > 0 && screenHeight > 0 && uploadMeta()) {
                 metaUploaded = true
             }
-            // 1) 上传最新帧（仅当有新帧；H.264 模式由 H264Streamer 独立上传 /h264）
-            val jpeg = latestJpeg
-            if (h264Streamer == null && jpeg != null && jpeg !== lastUploadedJpeg) {
-                uploadFrame(jpeg)
-                lastUploadedJpeg = jpeg
-            }
-            // 2) 拉取指令
-            pollCommands()
-        } catch (e: Exception) {
-            Logger.w("$TAG 轮询异常: ${e.message}")
+        } else {
+            nextUploadAllowedAt = t1 + UPLOAD_FAIL_BACKOFF_MS
+            bumpFailWindow(t1)
         }
-        pollHandler?.postDelayed(::pollLoop, 150)
+        maybeAdapt(t1)
+        scheduleUpload(if (ok) UPLOAD_LOOP_POLL_MS else UPLOAD_FAIL_BACKOFF_MS)
     }
 
-    /**
-     * 家属页能力协商：在 H.264 硬编码流与 JPEG 帧流之间实时切换。
-     * 由 wsHandler 的 "mode" 指令触发（页面按 WebCodecs 可用性上报），主线程串行执行避免并发建链。
-     * 防抖：同方向重复指令忽略；异方向切换最小间隔 3s（多标签页/页面重复加载的指令不会再互相打架）。
-     */
-    @Volatile
-    private var lastModeSwitchAt = 0L
-
-    fun switchMode(h264: Boolean) {
-        mainHandler.post {
-            if (!running.get()) return@post
-            if (h264 && h264Streamer != null) return@post          // 已是 H.264，忽略重复指令
-            if (!h264 && h264Streamer == null) return@post         // 已是 JPEG，忽略重复指令
-            val now = System.currentTimeMillis()
-            if (now - lastModeSwitchAt < 3000) {
-                Logger.d(TAG, "模式切换防抖中，忽略 mode=${if (h264) "h264" else "mjpeg"} 指令")
-                return@post
-            }
-            lastModeSwitchAt = now
-            if (h264) switchToH264() else switchToJpeg()
-        }
+    private fun scheduleUpload(ms: Long) {
+        uploadHandler?.postDelayed(::uploadLoop, ms)
     }
 
-    /** H.264 模式（MediaCodec Surface 直连虚拟显示，硬编码） */
-    private fun switchToH264() {
-        if (h264Streamer != null) return
-        Logger.d(TAG, "家属页支持 WebCodecs，切换 H.264 硬编码流")
-        runCatching { imageReader?.close() }
-        imageReader = null
-        runCatching { virtualDisplay?.release() }
-        virtualDisplay = null
-        ensureTunnelOkHttp()
-        val s = H264Streamer(
-            mediaProjection!!, captureWidth, captureHeight, captureDensity,
-            tunnelOkHttp!!, tunnelRoom, VPS_HOST, VPS_PORT
-        )
-        h264Streamer = s
-        s.start()
-        if (!s.isAlive) {
-            // 编码器起不来（设备兼容问题）：清字段回退 JPEG，避免"已启动"假象卡死后续 mode 指令
-            Logger.w(TAG, "H.264 编码器不可用，回退 JPEG 帧流")
-            h264Streamer = null
-            createCapture(captureWidth, captureHeight, captureDensity)
-            return
-        }
-        h264RebuildWindowStart = System.currentTimeMillis()
-        h264RebuildCount = 0
-    }
-
-    /** JPEG 模式（ImageReader + 软编码，兼容兜底） */
-    private fun switchToJpeg() {
-        if (h264Streamer == null) {
-            // 看门狗回退路径：H.264 未启动时也要确保 JPEG 采集存在
-            if (imageReader == null) createCapture(captureWidth, captureHeight, captureDensity)
-            return
-        }
-        Logger.d(TAG, "切换 JPEG 帧流")
-        runCatching { h264Streamer?.stop() }
-        h264Streamer = null
-        createCapture(captureWidth, captureHeight, captureDensity)
-    }
-
-    /** 上报真实屏幕物理分辨率，供家属网页做点击/滑动坐标换算 */
-    private fun uploadMeta() {
-        runCatching {
+    /** 上报真实屏幕物理分辨率，供家属网页做点击/滑动坐标换算；返回是否成功（失败下次再报） */
+    private fun uploadMeta(): Boolean {
+        if (screenWidth <= 0) return false
+        return runCatching {
             val body = org.json.JSONObject()
                 .put("w", screenWidth)
                 .put("h", screenHeight)
@@ -592,26 +825,28 @@ class RemoteAssistService : Service() {
                 } else {
                     Logger.w("$TAG 上报分辨率失败 HTTP ${resp.code}")
                 }
-            }
-        }.onFailure { e ->
-            Logger.w("$TAG 上报分辨率异常: ${e.message}")
-        }
+                resp.isSuccessful
+            } ?: false
+        }.getOrDefault(false)
     }
 
-    private fun uploadFrame(jpeg: ByteArray) {
-        runCatching {
+    /** 上传最新帧；成功返回 true。keep-alive 连接被 NAT 重置时 OkHttp 会在新连接上自动重试一次 */
+    private fun uploadFrame(jpeg: ByteArray): Boolean {
+        return try {
             val req = Request.Builder()
                 .url("http://$VPS_HOST:$VPS_PORT/frame?room=$tunnelRoom")
                 .post(okhttp3.RequestBody.create(null, jpeg))
                 .build()
             tunnelOkHttp?.newCall(req)?.execute()?.use { resp ->
                 if (!resp.isSuccessful) Logger.w("$TAG 上传帧失败 HTTP ${resp.code}")
-            }
-        }.onFailure { e ->
-            // 网络抖动属正常，静默跳过，下一轮再试
+                resp.isSuccessful
+            } ?: false
+        } catch (e: Exception) {
+            // 网络抖动属正常，静默跳过，退避后重试
             if (System.currentTimeMillis() % 30_000 < 300) {
                 Logger.w("$TAG 上传帧异常: ${e.message}")
             }
+            false
         }
     }
 
@@ -646,32 +881,53 @@ class RemoteAssistService : Service() {
         }
     }
 
-    private fun imageToJpeg(image: Image, quality: Int): ByteArray? {
-        val t0 = System.currentTimeMillis()
-        val plane = image.planes[0]
-        val buffer = plane.buffer
-        val pixelStride = plane.pixelStride
-        val rowStride = plane.rowStride
-        val rowPadding = rowStride - pixelStride * image.width
-        Logger.d(TAG, "imageToJpeg 开始 ${image.width}x${image.height} bufferRemaining=${buffer.remaining()}")
-        val bitmap = Bitmap.createBitmap(
-            image.width + rowPadding / pixelStride,
-            image.height,
-            Bitmap.Config.ARGB_8888
-        )
-        bitmap.copyPixelsFromBuffer(buffer)
-        val cropped = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
-        val baos = ByteArrayOutputStream()
-        val ok = cropped.compress(Bitmap.CompressFormat.JPEG, quality, baos)
-        val t1 = System.currentTimeMillis()
-        Logger.d(TAG, "imageToJpeg 完成 ok=$ok size=${baos.size()} 耗时${t1 - t0}ms")
-        bitmap.recycle()
-        cropped.recycle()
-        if (!ok) {
-            Logger.w(TAG, "JPEG 压缩失败（返回 false）")
-            return null
+    // ==================== 网络自适应（延迟高→低画质，延迟低→高画质） ====================
+
+    private fun resetFailWindow(now: Long) {
+        if (now - failWindowStart > 5000) {
+            failWindowCount = 0
+            failWindowStart = now
         }
-        return baos.toByteArray()
+    }
+
+    private fun bumpFailWindow(now: Long) {
+        if (now - failWindowStart > 5000) {
+            failWindowCount = 0
+            failWindowStart = now
+        }
+        failWindowCount++
+    }
+
+    /**
+     * 每 2s 评估一次链路质量：
+     *  - RTT 平滑值 > 400ms 或 5s 内失败 ≥3 次 → 立即降一档（降至 5fps/JPEG40）；
+     *  - RTT < 160ms 且无失败，连续 2 次评估达标 → 升一档（最高 15fps/JPEG80）。
+     * 升降只走相邻档位，带滞回防抖动。
+     */
+    private fun maybeAdapt(now: Long) {
+        if (now - lastAdaptAt < ADAPT_EVAL_INTERVAL_MS) return
+        lastAdaptAt = now
+        resetFailWindow(now)
+        val bad = ewmaRttMs > RTT_BAD_MS || failWindowCount >= FAIL_BAD_COUNT
+        val excellent = ewmaRttMs < RTT_GOOD_MS && failWindowCount == 0
+        if (bad) {
+            upStreak = 0
+            if (tier.ordinal > 0) {
+                val prev = tier
+                tier = Tier.entries[tier.ordinal - 1]
+                Logger.d(TAG, "网络自适应 ↓ ${prev.name}→${tier.name}（${tier.fps}fps/JPEG${tier.quality}）rtt=${ewmaRttMs.toInt()}ms 失败=$failWindowCount")
+            }
+        } else if (excellent && tier.ordinal < Tier.entries.size - 1) {
+            upStreak++
+            if (upStreak >= ADAPT_UP_NEEDED) {
+                upStreak = 0
+                val prev = tier
+                tier = Tier.entries[tier.ordinal + 1]
+                Logger.d(TAG, "网络自适应 ↑ ${prev.name}→${tier.name}（${tier.fps}fps/JPEG${tier.quality}）rtt=${ewmaRttMs.toInt()}ms")
+            }
+        } else {
+            upStreak = 0
+        }
     }
 
     // ==================== 通知 ====================
@@ -751,7 +1007,7 @@ class RemoteAssistService : Service() {
                 uri == "/status" -> newFixedLengthResponse(
                     Response.Status.OK,
                     "application/json",
-                    """{"running":true,"screen":"${service.screenWidth}x${service.screenHeight}","publicUrl":${if (service.publicUrl != null) "\"${service.publicUrl}\"" else "null"}}"""
+                    """{"running":true,"screen":"${service.screenWidth}x${service.screenHeight}","publicUrl":${if (service.publicUrl != null) "\"${service.publicUrl}\"" else "null"},"fps":${service.tier.fps},"quality":${service.tier.quality},"rtt":${service.ewmaRttMs.toInt()}}"""
                 )
 
                 else -> newFixedLengthResponse(
@@ -901,7 +1157,7 @@ class RemoteAssistService : Service() {
                             pipeOut.write("\r\n".toByteArray())
                             pipeOut.flush()
                         }
-                        Thread.sleep(FRAME_INTERVAL_MS)
+                        Thread.sleep(LAN_MJPEG_INTERVAL_MS)
                     }
                 } catch (_: Exception) {
                     // 客户端断开或管道关闭，结束写线程
