@@ -1,7 +1,10 @@
 package com.example.onepass.service
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.telephony.SmsManager
+import android.util.Log
 import com.example.onepass.utils.Logger
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -58,8 +61,18 @@ object SosHelper {
             .apply()
     }
 
-    /** 执行呼救。返回 (短信结果, 推送结果)，供 UI 展示/播报 */
-    fun execute(context: Context): Pair<String, String> {
+    /**
+     * 执行呼救（后台线程执行，主线程回调）。返回 (短信结果, 推送结果)。
+     * ⚠️ 必须在后台线程做网络请求——Android 主线程网络操作抛 NetworkOnMainThreadException。
+     */
+    fun execute(context: Context, onResult: (String, String) -> Unit) {
+        Thread {
+            val r = executeSync(context)
+            Handler(Looper.getMainLooper()).post { onResult(r.first, r.second) }
+        }.apply { isDaemon = true }.start()
+    }
+
+    private fun executeSync(context: Context): Pair<String, String> {
         val cfg = loadConfig(context)
         if (!cfg.enabled) return "紧急呼救未启用" to "请在设置中开启"
         val smsResult = if (cfg.phones.isEmpty()) "未绑定号码" else sendSms(cfg.phones, cfg.smsText)
@@ -74,25 +87,29 @@ object SosHelper {
         return smsResult to pushes.joinToString(" ")
     }
 
-    /** 设置页测试：只发短信 */
-    fun testSms(context: Context): String {
-        val cfg = loadConfig(context)
-        if (cfg.phones.isEmpty()) return "未绑定号码"
-        return sendSms(cfg.phones, cfg.smsText)
+    /** 设置页测试：只发短信（后台线程 + 主线程回调） */
+    fun testSms(context: Context, onResult: (String) -> Unit) {
+        Thread {
+            val cfg = loadConfig(context)
+            val r = if (cfg.phones.isEmpty()) "未绑定号码" else sendSms(cfg.phones, cfg.smsText)
+            Handler(Looper.getMainLooper()).post { onResult(r) }
+        }.apply { isDaemon = true }.start()
     }
 
-    /** 设置页测试：只发推送 */
-    fun testPush(context: Context): String {
-        val cfg = loadConfig(context)
-        val pushes = mutableListOf<String>()
-        if (cfg.pushdeerKey.isNotBlank()) {
-            pushes.add("推送:" + pushPushdeer(cfg.pushdeerKey, cfg.pushText))
-        }
-        if (cfg.serverchanKey.isNotBlank()) {
-            pushes.add("微信:" + pushServerchan(cfg.serverchanKey, cfg.pushText))
-        }
-        if (pushes.isEmpty()) return "未配置推送 key"
-        return pushes.joinToString(" ")
+    /** 设置页测试：只发推送（后台线程 + 主线程回调） */
+    fun testPush(context: Context, onResult: (String) -> Unit) {
+        Thread {
+            val cfg = loadConfig(context)
+            val pushes = mutableListOf<String>()
+            if (cfg.pushdeerKey.isNotBlank()) {
+                pushes.add("推送:" + pushPushdeer(cfg.pushdeerKey, cfg.pushText))
+            }
+            if (cfg.serverchanKey.isNotBlank()) {
+                pushes.add("微信:" + pushServerchan(cfg.serverchanKey, cfg.pushText))
+            }
+            val r = if (pushes.isEmpty()) "未配置推送 key" else pushes.joinToString(" ")
+            Handler(Looper.getMainLooper()).post { onResult(r) }
+        }.apply { isDaemon = true }.start()
     }
 
     private fun sendSms(phones: List<String>, text: String): String {
@@ -104,33 +121,50 @@ object SosHelper {
                     sms.sendTextMessage(p, null, text, null, null)
                     ok++
                 } catch (e: Exception) {
-                    Logger.w("$TAG 短信发送失败 $p: ${e.message}")
+                    Log.w(TAG, "短信发送失败 $p: ${e.message}")
                 }
             }
             "短信已发 $ok/${phones.size} 个号码"
         } catch (e: Exception) {
-            Logger.w("$TAG 短信异常: ${e.message}")
+            Log.w(TAG, "短信异常: ${e.message}")
             "短信失败: ${e.message}"
         }
     }
 
     private fun httpGet(url: String): Boolean {
         return try {
+            // 真机实测：sctapi.ftqq.com 首次连接可达 ~20s（DNS/握手慢），8s 超时必失败。
+            // 调大超时 + 预热机制（warmup 提前建立连接后秒连）。
             val client = OkHttpClient.Builder()
-                .connectTimeout(8, TimeUnit.SECONDS)
-                .readTimeout(8, TimeUnit.SECONDS)
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(25, TimeUnit.SECONDS)
+                .writeTimeout(15, TimeUnit.SECONDS)
                 .build()
             val req = Request.Builder().url(url).get().build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    Logger.w("$TAG 推送响应 ${resp.code} url=$url")
+                    Log.w(TAG, "推送响应 ${resp.code} url=$url")
                 }
                 resp.isSuccessful
             }
         } catch (e: Exception) {
-            Logger.w("$TAG 推送异常: ${e.message}")
+            // Logger.w 为空实现，这里必须用 Log 直接打真实错误（超时/DNS/握手）
+            Log.w(TAG, "推送异常: ${e.javaClass.simpleName} ${e.message} url=$url")
             false
         }
+    }
+
+    /**
+     * 连接预热：提前访问推送服务根路径，建立 DNS/连接缓存。
+     * 真机实测首连 ~20s（之后秒连），预热后紧急呼救能即时送达。
+     */
+    fun warmup(context: Context) {
+        val cfg = loadConfig(context)
+        if (cfg.serverchanKey.isBlank() && cfg.pushdeerKey.isBlank()) return
+        Thread {
+            if (cfg.serverchanKey.isNotBlank()) httpGet("https://sctapi.ftqq.com/")
+            if (cfg.pushdeerKey.isNotBlank()) httpGet("https://api.pushdeer.com/")
+        }.apply { isDaemon = true }.start()
     }
 
     private fun pushPushdeer(key: String, text: String): String {

@@ -257,10 +257,11 @@ class MainActivity : AppCompatActivity() {
     /** 执行紧急呼救：短信（需权限）+ PushDeer/Server酱 推送 + 语音播报 */
     private fun triggerSos() {
         try {
-            val (smsResult, pushResult) = SosHelper.execute(this)
-            Toast.makeText(this, "$smsResult · $pushResult", Toast.LENGTH_LONG).show()
-            Logger.d("SOS: $smsResult · $pushResult")
-            speakText("已通知家人，请耐心等待帮助")
+            SosHelper.execute(this) { smsResult, pushResult ->
+                Toast.makeText(this, "$smsResult · $pushResult", Toast.LENGTH_LONG).show()
+                Logger.d("SOS: $smsResult · $pushResult")
+                speakText("已通知家人，请耐心等待帮助")
+            }
         } catch (e: Exception) {
             Logger.e("SOS 呼救异常: ${e.message}", e)
             Toast.makeText(this, "呼救失败：${e.message}", Toast.LENGTH_LONG).show()
@@ -316,6 +317,9 @@ class MainActivity : AppCompatActivity() {
 
         // 初始化手电筒控制器（注册 TorchCallback，保持开关状态准确）
         FlashlightController.initialize(this)
+
+        // 预热紧急呼救推送连接（首连 ~20s，预热后秒发）
+        try { SosHelper.warmup(this) } catch (_: Exception) {}
         
         // 不在onCreate中初始化TextToSpeech，而是在onResume中初始化
         Logger.d("准备在onResume中初始化TextToSpeech")

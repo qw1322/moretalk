@@ -134,7 +134,7 @@ class SettingsActivity : AppCompatActivity() {
     private val sosSmsPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ ->
-        Toast.makeText(this, SosHelper.testSms(this), Toast.LENGTH_LONG).show()
+        SosHelper.testSms(this) { r -> Toast.makeText(this, r, Toast.LENGTH_LONG).show() }
     }
 
     private val prefs by lazy {
@@ -497,12 +497,12 @@ class SettingsActivity : AppCompatActivity() {
             ) {
                 sosSmsPermissionLauncher.launch(android.Manifest.permission.SEND_SMS)
             } else {
-                Toast.makeText(this, SosHelper.testSms(this), Toast.LENGTH_LONG).show()
+                SosHelper.testSms(this) { r -> Toast.makeText(this, r, Toast.LENGTH_LONG).show() }
             }
         }
         btnSosTestPush.setOnClickListener {
             saveSosSettings()
-            Toast.makeText(this, "测试推送：" + SosHelper.testPush(this), Toast.LENGTH_LONG).show()
+            SosHelper.testPush(this) { r -> Toast.makeText(this, "测试推送：$r", Toast.LENGTH_LONG).show() }
         }
 
         btnContacts.setOnClickListener {
@@ -844,6 +844,8 @@ class SettingsActivity : AppCompatActivity() {
             )
         )
         Toast.makeText(this, "紧急呼救设置已保存（${phones.size} 个号码）", Toast.LENGTH_SHORT).show()
+        // 预热推送连接：首次连接可达 20s，提前建立后紧急呼救即时送达
+        SosHelper.warmup(this)
     }
 
     private fun loadCommonApps(commonAppsSet: Set<String>?) {
