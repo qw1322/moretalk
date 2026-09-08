@@ -997,6 +997,152 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
+        <!-- 紧急呼救设置（v1.8.7）-->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/sosSettingsCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="紧急呼救"
+                    android:textSize="27sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="老人按主界面红色按钮，立即发短信并推送通知给家人。"
+                    android:textColor="#999999"
+                    android:textSize="16sp" />
+
+                <android.widget.Switch
+                    android:id="@+id/switchSosEnabled"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="启用紧急呼救"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="短信接收号码（多个用逗号分隔）"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editSosPhones"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="如 13800138000,13900139000"
+                    android:inputType="phone"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="短信内容"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editSosSmsText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="紧急呼救！我是家里老人，需要帮助，请速回电！"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="PushDeer 推送 key（api.pushdeer.com，可选）"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editPushdeerKey"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="子女 PushDeer App/小程序扫码获取"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Server酱 SendKey（sct.ftqq.com，可选）"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editServerchanKey"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="子女微信扫码关注 Server酱 获取"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="推送内容（PushDeer / Server酱 共用）"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editSosPushText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="⚠️ 紧急呼救：家里老人按下了紧急呼救按钮，需要帮助！"
+                    android:textSize="18sp" />
+
+                <Button
+                    android:id="@+id/btnSosSave"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="12dp"
+                    android:text="保存紧急呼救设置"
+                    android:textSize="22sp" />
+
+                <Button
+                    android:id="@+id/btnSosTestSms"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="8dp"
+                    android:text="发送测试短信"
+                    android:textSize="22sp" />
+
+                <Button
+                    android:id="@+id/btnSosTestPush"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="8dp"
+                    android:text="发送测试推送"
+                    android:textSize="22sp" />
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
         <Button
             android:id="@+id/btnRemoteAssist"
             android:layout_width="match_parent"

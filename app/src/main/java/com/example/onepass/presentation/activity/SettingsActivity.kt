@@ -10,6 +10,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -26,6 +27,7 @@ import com.example.onepass.core.config.GlobalScaleManager
 import com.example.onepass.service.BundledSpeechSupport
 import com.example.onepass.service.DouyinReturnButtonService
 import com.example.onepass.service.FloatingHomeButtonService
+import com.example.onepass.service.SosHelper
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
 import com.google.android.accessibility.selecttospeak.SelectToSpeakService
@@ -116,6 +118,24 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var textRemoteAssistStatus: TextView
     private lateinit var btnStopRemoteAssist: Button
+
+    // 紧急呼救设置（v1.8.7）
+    private lateinit var switchSosEnabled: Switch
+    private lateinit var editSosPhones: EditText
+    private lateinit var editSosSmsText: EditText
+    private lateinit var editPushdeerKey: EditText
+    private lateinit var editServerchanKey: EditText
+    private lateinit var editSosPushText: EditText
+    private lateinit var btnSosSave: Button
+    private lateinit var btnSosTestSms: Button
+    private lateinit var btnSosTestPush: Button
+
+    /** 测试短信的短信权限请求 */
+    private val sosSmsPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        Toast.makeText(this, SosHelper.testSms(this), Toast.LENGTH_LONG).show()
+    }
 
     private val prefs by lazy {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -276,6 +296,16 @@ class SettingsActivity : AppCompatActivity() {
 
         textRemoteAssistStatus = findViewById(R.id.textRemoteAssistStatus)
         btnStopRemoteAssist = findViewById(R.id.btnStopRemoteAssist)
+
+        switchSosEnabled = findViewById(R.id.switchSosEnabled)
+        editSosPhones = findViewById(R.id.editSosPhones)
+        editSosSmsText = findViewById(R.id.editSosSmsText)
+        editPushdeerKey = findViewById(R.id.editPushdeerKey)
+        editServerchanKey = findViewById(R.id.editServerchanKey)
+        editSosPushText = findViewById(R.id.editSosPushText)
+        btnSosSave = findViewById(R.id.btnSosSave)
+        btnSosTestSms = findViewById(R.id.btnSosTestSms)
+        btnSosTestPush = findViewById(R.id.btnSosTestPush)
 
         textDateStyle = findViewById(R.id.textDateStyle)
         textCommonAppsTitle = findViewById(R.id.textCommonAppsTitle)
@@ -455,6 +485,24 @@ class SettingsActivity : AppCompatActivity() {
                 Toast.makeText(this, "远程协助当前未运行，无需停止", Toast.LENGTH_SHORT).show()
             }
             updateRemoteAssistStatus()
+        }
+
+        // ===== 紧急呼救设置（v1.8.7）=====
+        loadSosSettings()
+        btnSosSave.setOnClickListener { saveSosSettings() }
+        btnSosTestSms.setOnClickListener {
+            saveSosSettings()
+            if (checkSelfPermission(android.Manifest.permission.SEND_SMS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                sosSmsPermissionLauncher.launch(android.Manifest.permission.SEND_SMS)
+            } else {
+                Toast.makeText(this, SosHelper.testSms(this), Toast.LENGTH_LONG).show()
+            }
+        }
+        btnSosTestPush.setOnClickListener {
+            saveSosSettings()
+            Toast.makeText(this, "测试推送：" + SosHelper.testPush(this), Toast.LENGTH_LONG).show()
         }
 
         btnContacts.setOnClickListener {
@@ -766,6 +814,36 @@ class SettingsActivity : AppCompatActivity() {
         }
         btnStopRemoteAssist.isEnabled = running
         btnStopRemoteAssist.alpha = if (running) 1f else 0.6f
+    }
+
+    /** 紧急呼救：加载配置到设置控件 */
+    private fun loadSosSettings() {
+        val cfg = SosHelper.loadConfig(this)
+        switchSosEnabled.isChecked = cfg.enabled
+        editSosPhones.setText(cfg.phones.joinToString(","))
+        editSosSmsText.setText(cfg.smsText)
+        editPushdeerKey.setText(cfg.pushdeerKey)
+        editServerchanKey.setText(cfg.serverchanKey)
+        editSosPushText.setText(cfg.pushText)
+    }
+
+    /** 紧急呼救：保存控件内容到配置 */
+    private fun saveSosSettings() {
+        val phones = editSosPhones.text.toString()
+            .split(',', '，', ';', '；', ' ', '\n')
+            .map { it.trim() }.filter { it.isNotBlank() }
+        SosHelper.saveConfig(
+            this,
+            SosHelper.SosConfig(
+                enabled = switchSosEnabled.isChecked,
+                phones = phones,
+                smsText = editSosSmsText.text.toString().ifBlank { SosHelper.DEFAULT_SMS_TEXT },
+                pushdeerKey = editPushdeerKey.text.toString().trim(),
+                serverchanKey = editServerchanKey.text.toString().trim(),
+                pushText = editSosPushText.text.toString().ifBlank { SosHelper.DEFAULT_PUSH_TEXT }
+            )
+        )
+        Toast.makeText(this, "紧急呼救设置已保存（${phones.size} 个号码）", Toast.LENGTH_SHORT).show()
     }
 
     private fun loadCommonApps(commonAppsSet: Set<String>?) {

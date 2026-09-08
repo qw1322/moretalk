@@ -58,13 +58,6 @@ class RemoteAssistWsHandler(private val service: RemoteAssistService) {
                     val ok = SelectToSpeakService.performSwipe(x1, y1, x2, y2, d)
                     sink.sendText(JSONObject().put("op", "result").put("ok", ok).toString())
                 }
-
-                // 家属页能力协商：h264 = 浏览器支持 WebCodecs（手机切 H.264 硬编码流）；
-                // mjpeg = 不支持（手机切 JPEG 帧流，兼容一切浏览器与老手机端）
-                "mode" -> {
-                    val h264 = obj.optString("mode") == "h264"
-                    service.switchMode(h264)
-                }
             }
         } catch (e: Exception) {
             Logger.w("RemoteAssistWs 解析失败: ${e.message}")

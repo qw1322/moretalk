@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 紧急呼救瓦片图标：红色圆形 + 白色感叹号（醒目、无文字依赖） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="76dp"
+    android:height="76dp"
+    android:viewportWidth="76"
+    android:viewportHeight="76">
+    <!-- 红色圆底 -->
+    <path
+        android:fillColor="#D32F2F"
+        android:pathData="M38,4 A34,34 0 1,0 38,72 A34,34 0 1,0 38,4 Z" />
+    <!-- 白色感叹号竖条 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,18 h8 v28 h-8 Z" />
+    <!-- 白色感叹号圆点 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,52 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 Z" />
+</vector>

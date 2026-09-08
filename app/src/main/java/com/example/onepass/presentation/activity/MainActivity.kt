@@ -59,6 +59,7 @@ import com.example.onepass.service.DouyinReturnButtonService
 import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.FlashlightController
 import com.example.onepass.service.RemoteAssistService
+import com.example.onepass.service.SosHelper
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
 import com.example.onepass.utils.PerformanceMonitor
@@ -93,13 +94,17 @@ class MainActivity : AppCompatActivity() {
         const val KEY_TILE_WECHAT_READ = "tile_wechat_read_visible"
         const val KEY_TILE_TORCH = "tile_torch_visible"
         const val KEY_TILE_REMOTE_ASSIST = "tile_remote_assist_visible"
+        const val KEY_TILE_SOS = "tile_sos_visible"
 
         /** 桌面自带功能瓦片 ID（参与排序，存于 app_orders） */
         const val TILE_ID_WECHAT_READ = "__wechat_read__"
         const val TILE_ID_TORCH = "__torch__"
         const val TILE_ID_REMOTE_ASSIST = "__remote_assist__"
+        const val TILE_ID_SOS = "__sos__"
 
-        private val TILE_IDS = setOf(TILE_ID_WECHAT_READ, TILE_ID_TORCH, TILE_ID_REMOTE_ASSIST)
+        private val TILE_IDS = setOf(
+            TILE_ID_WECHAT_READ, TILE_ID_TORCH, TILE_ID_REMOTE_ASSIST, TILE_ID_SOS
+        )
 
         fun isTileId(id: String): Boolean = id in TILE_IDS
     }
@@ -234,6 +239,31 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, if (FlashlightController.isTorchOn) "手电筒已开" else "手电筒已关", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(this, "未获得相机权限，无法使用手电筒", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 紧急呼救短信权限请求（授予后立即执行呼救） */
+    private val sosPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            triggerSos()
+        } else {
+            Toast.makeText(this, "未获得短信权限，仅发送网络推送", Toast.LENGTH_SHORT).show()
+            triggerSos()
+        }
+    }
+
+    /** 执行紧急呼救：短信（需权限）+ PushDeer/Server酱 推送 + 语音播报 */
+    private fun triggerSos() {
+        try {
+            val (smsResult, pushResult) = SosHelper.execute(this)
+            Toast.makeText(this, "$smsResult · $pushResult", Toast.LENGTH_LONG).show()
+            Logger.d("SOS: $smsResult · $pushResult")
+            speakText("已通知家人，请耐心等待帮助")
+        } catch (e: Exception) {
+            Logger.e("SOS 呼救异常: ${e.message}", e)
+            Toast.makeText(this, "呼救失败：${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -1926,6 +1956,7 @@ class MainActivity : AppCompatActivity() {
         if (tilePrefs.getBoolean(KEY_TILE_WECHAT_READ, true)) appendWechatReadTile()
         if (tilePrefs.getBoolean(KEY_TILE_TORCH, true)) appendTorchTile()
         if (tilePrefs.getBoolean(KEY_TILE_REMOTE_ASSIST, true)) appendRemoteAssistTile()
+        if (tilePrefs.getBoolean(KEY_TILE_SOS, true)) appendSosTile()
 
         // 瓦片与已选应用一起按排序值排列（瓦片 ID 也存于 app_orders，编辑页可拖动顺序）
         commonApps.sortWith(Comparator { app1, app2 ->
@@ -1991,9 +2022,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 固定追加「紧急呼救」瓦片（红色，点击立即发短信+推送通知家人）
+     */
+    private fun appendSosTile() {
+        val icon = ContextCompat.getDrawable(this, R.drawable.ic_sos) ?: return
+        commonApps.add(
+            CommonApp(TILE_ID_SOS, "紧急呼救", icon, isSos = true)
+        )
+    }
+
+    /**
      * 常用应用点击：开关瓦片切换点读状态，远程协助启动服务，其余启动应用
      */
     private fun handleCommonAppClick(app: CommonApp) {
+        if (app.isSos) {
+            // 紧急呼救：立即发短信+推送+语音播报
+            if (checkSelfPermission(android.Manifest.permission.SEND_SMS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                sosPermissionLauncher.launch(android.Manifest.permission.SEND_SMS)
+            } else {
+                triggerSos()
+            }
+            return
+        }
         if (app.isTorch) {
             // 手电筒：直接开关，更新瓦片状态
             if (!FlashlightController.hasFlash(this)) {
@@ -2072,6 +2124,7 @@ data class CommonApp(
     val isToggle: Boolean = false,
     val isRemoteAssist: Boolean = false,
     val isTorch: Boolean = false,
+    val isSos: Boolean = false,
     var toggleOn: Boolean = false
 )
 
