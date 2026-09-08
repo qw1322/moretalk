@@ -130,6 +130,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnSosTestSms: Button
     private lateinit var btnSosTestPush: Button
 
+    // 位置上报设置（v1.9.1）
+    private lateinit var switchLocationReport: Switch
+    private lateinit var editLocationServer: EditText
+    private lateinit var editLocationDeviceId: EditText
+    private lateinit var btnLocationSave: Button
+
     /** 测试短信的短信权限请求 */
     private val sosSmsPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -306,6 +312,11 @@ class SettingsActivity : AppCompatActivity() {
         btnSosSave = findViewById(R.id.btnSosSave)
         btnSosTestSms = findViewById(R.id.btnSosTestSms)
         btnSosTestPush = findViewById(R.id.btnSosTestPush)
+
+        switchLocationReport = findViewById(R.id.switchLocationReport)
+        editLocationServer = findViewById(R.id.editLocationServer)
+        editLocationDeviceId = findViewById(R.id.editLocationDeviceId)
+        btnLocationSave = findViewById(R.id.btnLocationSave)
 
         textDateStyle = findViewById(R.id.textDateStyle)
         textCommonAppsTitle = findViewById(R.id.textCommonAppsTitle)
@@ -503,6 +514,20 @@ class SettingsActivity : AppCompatActivity() {
         btnSosTestPush.setOnClickListener {
             saveSosSettings()
             SosHelper.testPush(this) { r -> Toast.makeText(this, "测试推送：$r", Toast.LENGTH_LONG).show() }
+        }
+
+        // ===== 位置上报设置（v1.9.1）=====
+        switchLocationReport.isChecked = com.example.onepass.service.LocationReporter.isEnabled(this)
+        editLocationServer.setText(com.example.onepass.service.LocationReporter.server(this))
+        editLocationDeviceId.setText(com.example.onepass.service.LocationReporter.deviceId(this))
+        btnLocationSave.setOnClickListener {
+            com.example.onepass.service.LocationReporter.save(
+                this,
+                switchLocationReport.isChecked,
+                editLocationServer.text.toString(),
+                editLocationDeviceId.text.toString()
+            )
+            Toast.makeText(this, "位置上报设置已保存", Toast.LENGTH_SHORT).show()
         }
 
         btnContacts.setOnClickListener {

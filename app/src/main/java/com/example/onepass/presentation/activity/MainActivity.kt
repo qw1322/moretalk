@@ -58,6 +58,7 @@ import com.example.onepass.service.BundledSpeechSupport
 import com.example.onepass.service.DouyinReturnButtonService
 import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.FlashlightController
+import com.example.onepass.service.LocationReporter
 import com.example.onepass.service.RemoteAssistService
 import com.example.onepass.service.SosHelper
 import com.example.onepass.service.SpeechEngineMode
@@ -130,6 +131,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var textToSpeech: TextToSpeech
     private lateinit var bundledSpeechSupport: BundledSpeechSupport
     private var isTextToSpeechInitialized = false
+    private var locationReporter: LocationReporter? = null
     private var bundledSpeechEngine: BundledSpeechEngine? = null
     private var speechJob: Job? = null
     private var currentCity = AppConfig.CITY
@@ -320,6 +322,9 @@ class MainActivity : AppCompatActivity() {
 
         // 预热紧急呼救推送连接（首连 ~20s，预热后秒发）
         try { SosHelper.warmup(this) } catch (_: Exception) {}
+
+        // 定位上报（v1.9.1）：周期上报位置到 Traccar，子女实时查看
+        try { LocationReporter(this).also { locationReporter = it }.start() } catch (_: Exception) {}
         
         // 不在onCreate中初始化TextToSpeech，而是在onResume中初始化
         Logger.d("准备在onResume中初始化TextToSpeech")
@@ -338,6 +343,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         speechJob?.cancel()
+        locationReporter?.stop()
+        locationReporter = null
         bundledSpeechEngine?.stop()
         bundledSpeechEngine?.close()
         bundledSpeechEngine = null

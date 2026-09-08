@@ -1143,6 +1143,88 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
+        <!-- 位置上报设置（v1.9.1）-->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/locationSettingsCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="位置上报"
+                    android:textSize="27sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="自动上报手机位置到自建地图服务器，子女可实时查看老人位置与轨迹。"
+                    android:textColor="#999999"
+                    android:textSize="16sp" />
+
+                <android.widget.Switch
+                    android:id="@+id/switchLocationReport"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="启用位置上报"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="上报服务器地址"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editLocationServer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="http://39.105.137.174:5055"
+                    android:inputType="textUri"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="设备 ID（子女端识别此手机用）"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editLocationDeviceId"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="MT963361"
+                    android:textSize="18sp" />
+
+                <Button
+                    android:id="@+id/btnLocationSave"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="12dp"
+                    android:text="保存位置上报设置"
+                    android:textSize="22sp" />
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
         <Button
             android:id="@+id/btnRemoteAssist"
             android:layout_width="match_parent"
