@@ -90,9 +90,11 @@ class H264Streamer(
             }
             val c = MediaCodec.createEncoderByType(MIME)
             c.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            // ⚠️ 顺序铁律：createInputSurface 必须在 start() 之前！
+            // 之前写在 start() 之后，必然抛 IllegalStateException → H.264 链路从未真正启动过
+            val surface = c.createInputSurface()
             c.start()
             codec = c
-            val surface = c.createInputSurface()
             virtualDisplay = mediaProjection.createVirtualDisplay(
                 "RemoteAssistH264",
                 encW,

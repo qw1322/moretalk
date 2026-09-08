@@ -380,6 +380,10 @@ class RemoteAssistService : Service() {
             startWsServer()
             // 公网通道：手机上传帧到 VPS + 轮询拉取家属指令（短连接，规避 CGNAT 长连接被重置）
             startPollUpload()
+            // v1.9.2 测试：默认直启 H.264 硬编码流（跳过 mode 协商，验证采集帧率）
+            mainHandler.post {
+                if (running.get() && h264Streamer == null) switchToH264()
+            }
             // 尝试 UPnP 端口映射（NAT 外网直连）
             val localIp = getLocalIpAddress()
             if (localIp != null) {
