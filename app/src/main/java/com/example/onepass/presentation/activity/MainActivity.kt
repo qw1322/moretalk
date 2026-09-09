@@ -2,6 +2,7 @@ package com.example.onepass.presentation.activity
 
 import android.Manifest
 import android.animation.ObjectAnimator
+import android.app.KeyguardManager
 import android.content.res.ColorStateList
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -423,6 +424,12 @@ class MainActivity : AppCompatActivity() {
                     lp.flags and showLocked.inv() and turnOn.inv()
                 }
                 window.attributes = lp
+            }
+            // v1.9.5：开启时真正解除锁屏（无密码时直接 dismiss），
+            // 避免「桌面穿透了、点其他应用锁屏又弹出」。
+            if (enabled && Build.VERSION.SDK_INT >= 26) {
+                val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+                km?.requestDismissKeyguard(this, null)
             }
         } catch (_: Exception) {}
     }
