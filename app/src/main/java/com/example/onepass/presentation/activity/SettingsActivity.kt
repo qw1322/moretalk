@@ -116,6 +116,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var textWechatMsgReadTitle: TextView
     private lateinit var textWechatMsgReadDesc: TextView
 
+    // 免锁屏直进桌面（v1.9.4）
+    private lateinit var switchNoLockScreen: Switch
+
     private lateinit var textRemoteAssistStatus: TextView
     private lateinit var btnStopRemoteAssist: Button
 
@@ -300,6 +303,8 @@ class SettingsActivity : AppCompatActivity() {
         textWechatMsgReadTitle = findViewById(R.id.textWechatMsgReadTitle)
         textWechatMsgReadDesc = findViewById(R.id.textWechatMsgReadDesc)
 
+        switchNoLockScreen = findViewById(R.id.switchNoLockScreen)
+
         textRemoteAssistStatus = findViewById(R.id.textRemoteAssistStatus)
         btnStopRemoteAssist = findViewById(R.id.btnStopRemoteAssist)
 
@@ -363,6 +368,8 @@ class SettingsActivity : AppCompatActivity() {
         switchLowBatteryReminder.isChecked = lowBatteryReminderEnabled
 
         switchFloatingBall.isChecked = prefs.getBoolean(KEY_FLOAT_BALL_ENABLED, true)
+
+        switchNoLockScreen.isChecked = prefs.getBoolean(KEY_NO_LOCK_SCREEN, false)
 
         // 悬浮球大小：进度 0..100 → 百分比 50%..150%（默认 100%）
         val floatBallSizePct = prefs.getInt(FloatingHomeButtonService.KEY_FLOAT_BALL_SIZE_PCT, 100)
@@ -588,6 +595,15 @@ class SettingsActivity : AppCompatActivity() {
                 stopFloatingBallService()
                 Toast.makeText(this, "已关闭桌面悬浮球", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        switchNoLockScreen.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(KEY_NO_LOCK_SCREEN, isChecked).apply()
+            Toast.makeText(
+                this,
+                if (isChecked) "已开启：点亮屏幕直接进桌面" else "已关闭：恢复滑动解锁",
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
         // 悬浮球大小：拖动后保存并重启服务立即生效
@@ -1043,5 +1059,6 @@ class SettingsActivity : AppCompatActivity() {
         private const val KEY_COMMON_APPS = "common_apps"
         private const val KEY_APP_ORDERS = "app_orders"
         private const val KEY_FLOAT_BALL_ENABLED = "float_ball_enabled"
+        private const val KEY_NO_LOCK_SCREEN = "no_lock_screen"
     }
 }

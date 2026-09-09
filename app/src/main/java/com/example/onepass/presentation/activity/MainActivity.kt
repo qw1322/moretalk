@@ -15,6 +15,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.Rect
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,6 +27,7 @@ import android.util.Log
 import android.view.View
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -102,6 +104,9 @@ class MainActivity : AppCompatActivity() {
         const val TILE_ID_TORCH = "__torch__"
         const val TILE_ID_REMOTE_ASSIST = "__remote_assist__"
         const val TILE_ID_SOS = "__sos__"
+
+        /** 免锁屏直进桌面（v1.9.4，存于 OnePassPrefs） */
+        const val KEY_NO_LOCK_SCREEN = "no_lock_screen"
 
         private val TILE_IDS = setOf(
             TILE_ID_WECHAT_READ, TILE_ID_TORCH, TILE_ID_REMOTE_ASSIST, TILE_ID_SOS
@@ -325,6 +330,9 @@ class MainActivity : AppCompatActivity() {
 
         // 定位上报（v1.9.1）：周期上报位置到 Traccar，子女实时查看
         try { LocationReporter(this).also { locationReporter = it }.start() } catch (_: Exception) {}
+
+        // 免锁屏直进桌面（v1.9.4）
+        applyNoLockScreen()
         
         // 不在onCreate中初始化TextToSpeech，而是在onResume中初始化
         Logger.d("准备在onResume中初始化TextToSpeech")
@@ -378,6 +386,9 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         Log.d(TAG, "onResume 开始")
 
+        // 每次回到前台都重设锁屏穿透（设置里开关后立即生效）
+        applyNoLockScreen()
+
         registerBatteryReceiverIfNeeded()
         updateBatteryStatus()
         updateDate()
@@ -387,6 +398,33 @@ class MainActivity : AppCompatActivity() {
         syncDouyinButtonService()
 
         Log.d(TAG, "onResume 完成")
+    }
+
+    /**
+     * 免锁屏直进桌面（v1.9.4）：开启后点亮屏幕直接显示本桌面，跳过滑动解锁。
+     * 系统若设置了锁屏密码（数字/图案），此机制无法绕过——需用户在系统设置中改回「无/滑动」。
+     */
+    private fun applyNoLockScreen() {
+        val enabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_NO_LOCK_SCREEN, false)
+        try {
+            if (Build.VERSION.SDK_INT >= 27) {
+                setShowWhenLocked(enabled)
+                setTurnScreenOn(enabled)
+            } else {
+                @Suppress("DEPRECATION")
+                val showLocked = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                @Suppress("DEPRECATION")
+                val turnOn = WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                val lp = window.attributes
+                lp.flags = if (enabled) {
+                    lp.flags or showLocked or turnOn
+                } else {
+                    lp.flags and showLocked.inv() and turnOn.inv()
+                }
+                window.attributes = lp
+            }
+        } catch (_: Exception) {}
     }
 
     override fun onPause() {

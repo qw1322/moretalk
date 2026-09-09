@@ -73,8 +73,9 @@ class RemoteAssistService : Service() {
         const val EXTRA_RESULT_DATA = "result_data"
         const val PORT = 8890
         const val WS_PORT = 8891
-        // 公网中继（家属 VPS）：手机隧道主动出站连接，绕过 CGNAT
-        const val VPS_HOST = "216.23.93.14"
+        // 公网中继（家属 VPS）：手机隧道主动出站连接，绕过 CGNAT。
+        // v1.9.2：迁移到新服务器（与 Traccar 同机，全家桶）
+        const val VPS_HOST = "39.105.137.174"
         const val VPS_PORT = 8899
         private const val CHANNEL_ID = "remote_assist"
         private const val NOTIFICATION_ID = 8890

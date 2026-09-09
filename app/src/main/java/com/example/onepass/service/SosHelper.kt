@@ -1,6 +1,7 @@
 package com.example.onepass.service
 
 import android.content.Context
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.telephony.SmsManager
@@ -75,7 +76,7 @@ object SosHelper {
     private fun executeSync(context: Context): Pair<String, String> {
         val cfg = loadConfig(context)
         if (!cfg.enabled) return "紧急呼救未启用" to "请在设置中开启"
-        val smsResult = if (cfg.phones.isEmpty()) "未绑定号码" else sendSms(cfg.phones, cfg.smsText)
+        val smsResult = if (cfg.phones.isEmpty()) "未绑定号码" else sendSms(context, cfg.phones, cfg.smsText)
         val pushes = mutableListOf<String>()
         if (cfg.pushdeerKey.isNotBlank()) {
             pushes.add("推送:" + pushPushdeer(cfg.pushdeerKey, cfg.pushText))
@@ -91,7 +92,7 @@ object SosHelper {
     fun testSms(context: Context, onResult: (String) -> Unit) {
         Thread {
             val cfg = loadConfig(context)
-            val r = if (cfg.phones.isEmpty()) "未绑定号码" else sendSms(cfg.phones, cfg.smsText)
+            val r = if (cfg.phones.isEmpty()) "未绑定号码" else sendSms(context, cfg.phones, cfg.smsText)
             Handler(Looper.getMainLooper()).post { onResult(r) }
         }.apply { isDaemon = true }.start()
     }
@@ -112,22 +113,66 @@ object SosHelper {
         }.apply { isDaemon = true }.start()
     }
 
-    private fun sendSms(phones: List<String>, text: String): String {
-        return try {
+    private fun sendSms(context: Context, phones: List<String>, text: String): String {
+        val results = mutableListOf<String>()
+        try {
             val sms = SmsManager.getDefault()
-            var ok = 0
             for (p in phones) {
+                val latch = java.util.concurrent.CountDownLatch(1)
+                var result = "未知"
+                // 路径1：带发送回调（能拿到真实结果；但 realme/ColorOS 对带 sentIntent
+                // 的第三方短信有拦截——返回 RESULT_ERROR_GENERIC_FAILURE）
+                val receiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: Context, intent: Intent) {
+                        result = when (resultCode) {
+                            android.app.Activity.RESULT_OK -> "成功"
+                            SmsManager.RESULT_ERROR_GENERIC_FAILURE -> "通用失败"
+                            SmsManager.RESULT_ERROR_NO_SERVICE -> "无服务"
+                            SmsManager.RESULT_ERROR_NULL_PDU -> "空PDU"
+                            SmsManager.RESULT_ERROR_RADIO_OFF -> "飞行模式"
+                            else -> "错误码$resultCode"
+                        }
+                        latch.countDown()
+                    }
+                }
                 try {
-                    sms.sendTextMessage(p, null, text, null, null)
-                    ok++
+                    val filter = android.content.IntentFilter("com.example.onepass.SMS_SENT")
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        context.registerReceiver(receiver, filter)
+                    }
+                    val sentPI = android.app.PendingIntent.getBroadcast(
+                        context, 0,
+                        Intent("com.example.onepass.SMS_SENT"),
+                        android.app.PendingIntent.FLAG_IMMUTABLE
+                    )
+                    sms.sendTextMessage(p, null, text, sentPI, null)
+                    latch.await(6, TimeUnit.SECONDS)
                 } catch (e: Exception) {
-                    Log.w(TAG, "短信发送失败 $p: ${e.message}")
+                    result = "异常:${e.message}"
+                } finally {
+                    runCatching { context.unregisterReceiver(receiver) }
+                }
+                if (result == "通用失败") {
+                    // 路径2：realme 拦截带 sentIntent 的发送 → 退回无回调直发
+                    // （v1.9.0 时代验证可行：弹系统确认框，同意后正常送达）
+                    try {
+                        sms.sendTextMessage(p, null, text, null, null)
+                        results.add("$p:已送系统确认")
+                        Log.w(TAG, "路径1被ROM拦截，已退回无回调直发 $p")
+                    } catch (e: Exception) {
+                        results.add("$p:异常:${e.message}")
+                    }
+                } else {
+                    results.add("$p:$result")
                 }
             }
-            "短信已发 $ok/${phones.size} 个号码"
+            return "短信 " + results.joinToString(" ")
         } catch (e: Exception) {
             Log.w(TAG, "短信异常: ${e.message}")
-            "短信失败: ${e.message}"
+            return "短信失败: ${e.message}"
         }
     }
 

@@ -211,6 +211,53 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
+        <!-- 免锁屏直进桌面（v1.9.4）-->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/noLockScreenCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/textNoLockScreenTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="点亮屏幕直接进桌面"
+                        android:textSize="27sp"
+                        android:textStyle="bold" />
+
+                    <Switch
+                        android:id="@+id/switchNoLockScreen"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/textNoLockScreenDesc"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="开启后，按电源键点亮屏幕就直接显示本桌面，不用滑动解锁。注意：如果手机设置了锁屏密码（数字/图案），此功能无法跳过，请在系统设置里把锁屏方式改为「无」或「滑动」。"
+                    android:textColor="#999999"
+                    android:textSize="16sp" />
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
         <androidx.cardview.widget.CardView
             android:id="@+id/floatingBallCard"
             android:layout_width="match_parent"
