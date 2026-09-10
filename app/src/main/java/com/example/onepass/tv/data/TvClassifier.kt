@@ -101,6 +101,9 @@ object TvClassifier {
         val name = channel.name
         // ⓞ 黑名单直接挡掉：远程源里的坏条目（测试卡 / 死台），别让老人点进去白等一趟
         if (name in BLOCK_NAMES) return null
+        // ⓪ B站点播唱段：按分组直接归戏曲（名字是「豫剧-穆桂英挂帅-辕门外三声炮」这种，关键词也能命中，
+        //    但显式判分组更稳，以后加「京剧唱段」这类新分组不会漏）
+        if (channel.group == BiliClient.GROUP_OPERA_SINGLE) return TvCategory.OPERA
         // ① 戏曲优先：CCTV-11 分组是「央视」，但内容全是戏，必须先判走
         if (name in OPERA_NAMES || name.containsAny(OPERA_WORDS)) return TvCategory.OPERA
         // ② 古装/武侠

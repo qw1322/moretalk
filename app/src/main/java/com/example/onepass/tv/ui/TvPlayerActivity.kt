@@ -20,6 +20,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.example.onepass.R
 import com.example.onepass.tv.cast.Dlna
 import com.example.onepass.tv.cast.DlnaDevice
+import com.example.onepass.tv.data.BiliClient
 import com.example.onepass.tv.data.BuiltinChannelSeed
 import com.example.onepass.tv.data.TvRepository
 import com.example.onepass.tv.model.TvCategory
@@ -569,7 +570,23 @@ class TvPlayerActivity : AppCompatActivity() {
         bufferingSince = 0L
         stallRecoverCount = 0
         startWatchdog()
-        engine.play(ch.urls[index])
+        val raw = ch.urls[index]
+        if (raw.startsWith(BiliClient.SCHEME)) {
+            // B站点播条目：列表里存的是 `bili://<bvid>/<cid>`，真实地址是**短时效签名 URL**，
+            // 只能在播放前才换。换不到就当这条源失败，走「换下一条源」的既有容错逻辑。
+            uiScope.launch {
+                val real = BiliClient.resolvePlayUrl(raw)
+                if (released || urlIndex != index) return@launch
+                if (real.isNullOrBlank()) {
+                    Log.w(TAG, "B站直链解析失败，换下一条源: $raw")
+                    playUrlAt(index + 1)
+                } else {
+                    engine.play(real)
+                }
+            }
+        } else {
+            engine.play(raw)
+        }
     }
 
     /** 上一个 / 下一个台（跳过没有地址的条目） */
