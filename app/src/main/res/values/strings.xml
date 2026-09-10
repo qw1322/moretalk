@@ -1,4 +1,59 @@
 <resources>
     <string name="app_name">MoreTalk</string>
     <string name="accessibility_service_description">帮助自动拨打微信视频和语音通话</string>
+
+    <!-- ============ 看电视（tv 模块） ============ -->
+    <!-- 桌面瓦片名 -->
+    <string name="tv_tile_name">看电视</string>
+
+    <!-- 分类页（点瓦片先进这里） -->
+    <string name="tv_category_title">想看什么</string>
+    <string name="tv_category_count">%1$d 个台</string>
+    <string name="tv_category_empty">这一类还没有台</string>
+
+    <!-- 播放页 -->
+    <string name="tv_status_loading_icon">📺</string>
+    <string name="tv_status_loading">正在打开…</string>
+    <string name="tv_status_failed">这个台看不了</string>
+    <string name="tv_status_trying">换一个台试试…</string>
+    <string name="tv_failure_next">换一个台</string>
+    <string name="tv_failure_home">回家</string>
+    <!-- 注意：播放页底部条**没有**「回家」按钮，回家统一交给桌面悬浮球（见 FloatingHomeButtonService）。
+         下面这条 tv_btn_home 只被失败兜底页复用，不要删。 -->
+    <string name="tv_btn_prev">上一个</string>
+    <string name="tv_btn_list">换台</string>
+    <string name="tv_btn_next">下一个</string>
+    <string name="tv_btn_cast">投屏</string>
+    <string name="tv_btn_home">回家</string>
+    <string name="tv_speak_opening">正在打开%1$s</string>
+    <string name="tv_speak_failed">这个台看不了，换一个台</string>
+    <string name="tv_speak_all_failed">找不到能看的台，请叫孩子帮忙</string>
+
+    <!-- 投屏（DLNA） -->
+    <string name="tv_cast_title">投到电视上</string>
+    <string name="tv_cast_searching">正在找电视…</string>
+    <string name="tv_cast_none">没找到电视，请确认电视和手机连的是同一个 Wi-Fi</string>
+    <string name="tv_cast_rescan">重新找</string>
+    <string name="tv_cast_close">取消</string>
+    <string name="tv_cast_hint">电视要和手机连同一个 Wi-Fi</string>
+    <string name="tv_cast_ok">已投到「%1$s」，看电视请用电视遥控器</string>
+    <string name="tv_cast_fail">投屏失败，请确认电视支持投屏、且和手机在同一个 Wi-Fi</string>
+
+    <!-- 系统播放器兜底（家属长按顶部台名触发） -->
+    <string name="tv_system_player_title">用系统播放器打开？</string>
+    <string name="tv_system_player_message">%1$s\n内置播放器打不开时才用这个办法</string>
+    <string name="tv_system_player_open">打开</string>
+    <string name="tv_system_player_none">手机上没找到能打开这个地址的播放器</string>
+    <string name="tv_failure_home_back">取消</string>
+
+    <!-- 频道选择页 -->
+    <string name="tv_channels_title">选择频道</string>
+    <string name="tv_channels_refresh">重新获取</string>
+    <string name="tv_channels_count">共 %1$d 个频道（%2$s）</string>
+    <string name="tv_channels_count_range">%1$s · 共 %2$d 个台（%3$s）</string>
+    <string name="tv_channels_source_remote">已更新</string>
+    <string name="tv_channels_source_builtin">使用内置频道</string>
+    <string name="tv_channels_refreshing">正在重新获取…</string>
+    <string name="tv_channels_refresh_done">频道已更新，共 %1$d 个</string>
+    <string name="tv_channels_refresh_failed">网络不好，仍使用原来的频道</string>
 </resources>

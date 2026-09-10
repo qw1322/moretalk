@@ -143,10 +143,23 @@ class FloatingHomeButtonService : Service() {
         }
     }
 
+    /**
+     * 回到 MoreTalk 主界面。
+     *
+     * 关键在 CLEAR_TOP | SINGLE_TOP：
+     * 原来只加 NEW_TASK，等于「把整个任务栈提到前台」——而看电视的播放页就在这个栈的栈顶，
+     * 结果就是点了悬浮球**看起来毫无反应**（停在栈顶的播放页上）。
+     * 加上 CLEAR_TOP 后，会把主界面之上的页面（播放页/频道页）统统关掉，
+     * 真正回到桌面；SINGLE_TOP 保证主界面不会重建、不闪。
+     */
     private fun goHome() {
         try {
             val intent = packageManager.getLaunchIntentForPackage(packageName)
-            intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            intent?.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
             startActivity(intent)
         } catch (e: Exception) {
             Logger.w("悬浮球返回桌面失败: ${e.message}")

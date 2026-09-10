@@ -52,9 +52,16 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation(files("libs/lunar-1.7.7.jar"))
+    implementation(files("libs/lunar-1.7.7.jar"))
     implementation(libs.nanohttpd)
     implementation(libs.nanohttpd.websocket)
     implementation(libs.okhttp)
+
+    // ===== 看电视功能：内置播放器（Media3 / ExoPlayer） =====
+    // media3-exoplayer 自带 HLS 与 FLV 解封装，覆盖 m3u8 直播源与港剧轮播的 FLV 流
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.hls)
+    implementation(libs.media3.ui)
 //    implementation("com.github.6tail:lunar-java:1.7.7")
 
     testImplementation(libs.junit)

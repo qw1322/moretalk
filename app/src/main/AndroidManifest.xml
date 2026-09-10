@@ -2,6 +2,9 @@
 <manifest package="com.example.onepass" xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <!-- 投屏（DLNA）：SSDP 靠局域网组播发现电视，不加这个权限组播包会被 ROM 丢弃 -->
+  <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
   <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
   <uses-permission android:name="android.permission.CAMERA" />
@@ -84,7 +87,12 @@
           android:name="android.support.FILE_PROVIDER_PATHS"
           android:resource="@xml/file_paths" />
     </provider>
-    <activity android:name=".presentation.activity.MainActivity" android:exported="true">
+    <!-- 桌面固定竖屏：老人机当桌面用，横过来会让整个布局错位（卡片、字号都是按竖屏调的）。
+         注意：只锁桌面，看电视的播放页故意不锁 —— 看视频横屏体验更好。 -->
+    <activity
+        android:name=".presentation.activity.MainActivity"
+        android:exported="true"
+        android:screenOrientation="portrait">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.LAUNCHER" />
@@ -102,5 +110,22 @@
     <activity android:name=".presentation.activity.ContactsActivity" android:exported="false" android:label="联系人" />
     <activity android:name=".presentation.activity.AddContactActivity" android:exported="false" android:label="添加联系人" />
     <activity android:name=".presentation.activity.ContactDetailActivity" android:exported="false" android:label="联系人详情" />
+
+    <!-- ===== 看电视（tv 模块） ===== -->
+    <!-- 分类页：点桌面「看电视」瓦片先到这里 -->
+    <activity
+        android:name=".tv.ui.TvCategoryActivity"
+        android:exported="false"
+        android:label="看电视" />
+    <activity
+        android:name=".tv.ui.TvPlayerActivity"
+        android:exported="false"
+        android:launchMode="singleTop"
+        android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+        android:theme="@style/Theme.OnePass.TvPlayer" />
+    <activity
+        android:name=".tv.ui.TvChannelsActivity"
+        android:exported="false"
+        android:label="选择频道" />
   </application>
 </manifest>

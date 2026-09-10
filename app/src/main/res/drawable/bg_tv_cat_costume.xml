@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 分类卡片背景：古装节目（琥珀金） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#55FFFFFF">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#D97706" />
+            <corners android:radius="24dp" />
+        </shape>
+    </item>
+</ripple>

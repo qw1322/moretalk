@@ -99,18 +99,20 @@ class MainActivity : AppCompatActivity() {
         const val KEY_TILE_TORCH = "tile_torch_visible"
         const val KEY_TILE_REMOTE_ASSIST = "tile_remote_assist_visible"
         const val KEY_TILE_SOS = "tile_sos_visible"
+        const val KEY_TILE_TV = "tile_tv_visible"
 
         /** 桌面自带功能瓦片 ID（参与排序，存于 app_orders） */
         const val TILE_ID_WECHAT_READ = "__wechat_read__"
         const val TILE_ID_TORCH = "__torch__"
         const val TILE_ID_REMOTE_ASSIST = "__remote_assist__"
         const val TILE_ID_SOS = "__sos__"
+        const val TILE_ID_TV = "__tv__"
 
         /** 免锁屏直进桌面（v1.9.4，存于 OnePassPrefs） */
         const val KEY_NO_LOCK_SCREEN = "no_lock_screen"
 
         private val TILE_IDS = setOf(
-            TILE_ID_WECHAT_READ, TILE_ID_TORCH, TILE_ID_REMOTE_ASSIST, TILE_ID_SOS
+            TILE_ID_WECHAT_READ, TILE_ID_TORCH, TILE_ID_REMOTE_ASSIST, TILE_ID_SOS, TILE_ID_TV
         )
 
         fun isTileId(id: String): Boolean = id in TILE_IDS
@@ -2007,12 +2009,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        // 追加「微信点读」「手电筒」「远程协助」瓦片（是否显示由常用应用编辑页的开关控制）
+        // 追加「微信点读」「手电筒」「远程协助」「紧急呼救」「看电视」瓦片（是否显示由常用应用编辑页的开关控制）
         val tilePrefs = getSharedPreferences(COMMON_APPS_PREFS, Context.MODE_PRIVATE)
         if (tilePrefs.getBoolean(KEY_TILE_WECHAT_READ, true)) appendWechatReadTile()
         if (tilePrefs.getBoolean(KEY_TILE_TORCH, true)) appendTorchTile()
         if (tilePrefs.getBoolean(KEY_TILE_REMOTE_ASSIST, true)) appendRemoteAssistTile()
         if (tilePrefs.getBoolean(KEY_TILE_SOS, true)) appendSosTile()
+        if (tilePrefs.getBoolean(KEY_TILE_TV, true)) appendTvTile()
 
         // 瓦片与已选应用一起按排序值排列（瓦片 ID 也存于 app_orders，编辑页可拖动顺序）
         commonApps.sortWith(Comparator { app1, app2 ->
@@ -2088,9 +2091,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 固定追加「看电视」瓦片（紫色，点击进入内置播放器，直接续播上次看的台）
+     */
+    private fun appendTvTile() {
+        val icon = ContextCompat.getDrawable(this, R.drawable.ic_tv) ?: return
+        commonApps.add(
+            CommonApp(TILE_ID_TV, getString(R.string.tv_tile_name), icon, isTv = true)
+        )
+    }
+
+    /**
      * 常用应用点击：开关瓦片切换点读状态，远程协助启动服务，其余启动应用
      */
     private fun handleCommonAppClick(app: CommonApp) {
+        if (app.isTv) {
+            // 看电视：先进分类页（央视频道/现代节目/古装节目/戏曲节目），再选台
+            startActivity(Intent(this, com.example.onepass.tv.ui.TvCategoryActivity::class.java))
+            return
+        }
         if (app.isSos) {
             // 紧急呼救：立即发短信+推送+语音播报
             if (checkSelfPermission(android.Manifest.permission.SEND_SMS) !=
@@ -2181,6 +2199,7 @@ data class CommonApp(
     val isRemoteAssist: Boolean = false,
     val isTorch: Boolean = false,
     val isSos: Boolean = false,
+    val isTv: Boolean = false,
     var toggleOn: Boolean = false
 )
 

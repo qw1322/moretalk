@@ -206,7 +206,8 @@ class CommonAppsActivity : AppCompatActivity() {
             val tileRes = mapOf(
                 MainActivity.TILE_ID_WECHAT_READ to R.drawable.ic_wechat_read,
                 MainActivity.TILE_ID_TORCH to R.drawable.ic_flashlight,
-                MainActivity.TILE_ID_REMOTE_ASSIST to R.drawable.ic_remote_assist
+                MainActivity.TILE_ID_REMOTE_ASSIST to R.drawable.ic_remote_assist,
+                MainActivity.TILE_ID_TV to R.drawable.ic_tv
             )
             var tileBaseOrder = 10000 // 默认排在所有应用之后；保存后可被调整
             tileRes.forEach { (id, resId) ->
@@ -310,6 +311,7 @@ class CommonAppsActivity : AppCompatActivity() {
         MainActivity.TILE_ID_WECHAT_READ -> "微信点读"
         MainActivity.TILE_ID_TORCH -> "手电筒"
         MainActivity.TILE_ID_REMOTE_ASSIST -> "远程协助"
+        MainActivity.TILE_ID_TV -> "看电视"
         else -> id
     }
 
@@ -318,6 +320,7 @@ class CommonAppsActivity : AppCompatActivity() {
         MainActivity.TILE_ID_WECHAT_READ -> MainActivity.KEY_TILE_WECHAT_READ
         MainActivity.TILE_ID_TORCH -> MainActivity.KEY_TILE_TORCH
         MainActivity.TILE_ID_REMOTE_ASSIST -> MainActivity.KEY_TILE_REMOTE_ASSIST
+        MainActivity.TILE_ID_TV -> MainActivity.KEY_TILE_TV
         else -> null
     }
 
