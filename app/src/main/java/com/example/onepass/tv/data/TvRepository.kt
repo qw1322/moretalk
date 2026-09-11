@@ -96,9 +96,6 @@ object TvRepository {
     /** 咪咕源（h264 + **aac**，720p/480p，国内 CDN）—— 央视各台用这个 */
     private val MIGU_RE = Regex("""https://[^\s"'<>]*miguvideo[^\s"'<>]*\.m3u8[^\s"'<>]*""")
 
-    /** 河南台官方源（腾讯云防盗链，txTime 到 2035 年） */
-    private val HNTV_RE = Regex("""https://[^\s"'<>]*hntv\.tv[^\s"'<>]*\.m3u8[^\s"'<>]*""")
-
     /**
      * 每个源站页面的 `id` 是**线路号**，不同频道能出地址的线路不一样
      * （实测：cctv1/2/5/6 走 id=2，cctv3/cctv11 走 id=3）——
@@ -109,22 +106,33 @@ object TvRepository {
     private val dynamicSources: List<DynamicSource> = buildList {
         // 央视 1~17：静态源实测 104 条里只有 17 条能下分片，且 CCTV-1 唯一那条是跨境源
         // （下行仅 68KB/s，720p 必然卡顿 + 音画不同步）；咪咕这条是国内 CDN，实测 1MB/s 级。
+        //
+        // ⚠️ 正则里**必须带本频道名**（`cctvNhd`）：源站页面偶尔会挂错流，
+        //    不加校验就会「抓串台」—— 梨园那次就是这么栽的（见下）。
         for (i in 1..17) {
             add(
                 DynamicSource(
                     channelId = "cctv$i",
                     pageUrl = "https://www.waadri.top/TV/CCTV/cctv$i.php",
-                    urlPattern = MIGU_RE
+                    urlPattern = Regex(
+                        """https://[^\s"'<>]*miguvideo[^\s"'<>]*cctv${i}hd[^\s"'<>]*\.m3u8[^\s"'<>]*"""
+                    )
                 )
             )
         }
-        // 戏曲：梨园（河南台官方源）
+        // 戏曲：梨园（河南台官方源，txTime 到 2035 年）
         add(
             DynamicSource(
                 channelId = "梨园",
                 // 河南台「梨园频道」页（路径里有中文，用百分号编码，避免 OkHttp 报 URL 非法）
                 pageUrl = "https://www.waadri.top/TV/%E6%B2%B3%E5%8D%97/HNLYPD.php",
-                urlPattern = HNTV_RE
+                // ⚠️ **只认 lypd**，血泪教训：
+                //    该页面标题写着「河南梨园频道」，但页面里挂的流其实是
+                //    `wssj.m3u8` = 河南台**武术世界**频道，而且那条流本身就在花屏。
+                //    原先正则写成「任意 hntv.tv 的 m3u8」，动态刷新就把这条花屏流插到了
+                //    梨园的第一位 —— 老人点「梨园」看到的是武术世界 + 满屏马赛克。
+                //    定位方式：ffmpeg 抽一帧看台标，一眼就看出来了。
+                urlPattern = Regex("""https://[^\s"'<>]*hntv\.tv/live/lypd\.m3u8[^\s"'<>]*""")
             )
         )
     }
