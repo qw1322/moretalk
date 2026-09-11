@@ -1272,6 +1272,136 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
+        <!-- B站戏曲设置（v1.9.7）-->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/biliSettingsCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="B站戏曲（名家名段）"
+                    android:textSize="27sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="戏曲唱段来自 B站。清晰度由片源本身决定：近年录制的舞台版可达 720P/1080P，八九十年代的老录像本身只有 240P（录进母带时就那样，任何设置都救不回来）。登录不改变戏曲画质，只用于访问需要登录的内容；账号仅保存在本机。"
+                    android:textColor="#999999"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/textBiliStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="未登录"
+                    android:textColor="#666666"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnBiliLogin"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="12dp"
+                    android:text="登录 B站"
+                    android:textSize="22sp" />
+
+                <Button
+                    android:id="@+id/btnBiliLogout"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="8dp"
+                    android:text="退出登录（清除本机账号）"
+                    android:textSize="22sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="画质"
+                    android:textSize="24sp"
+                    android:textStyle="bold" />
+
+                <RadioGroup
+                    android:id="@+id/biliQualityGroup"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="vertical">
+
+                    <RadioButton
+                        android:id="@+id/radioBiliAuto"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="自动：WiFi 高清 1080P / 流量省流 360P"
+                        android:textSize="20sp" />
+
+                    <RadioButton
+                        android:id="@+id/radioBiliHigh"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="始终高清（1080P，约 460MB/小时）"
+                        android:textSize="20sp" />
+
+                    <RadioButton
+                        android:id="@+id/radioBiliLow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="始终省流量（360P，约 58MB/小时）"
+                        android:textSize="20sp" />
+                </RadioGroup>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="手动填写 SESSDATA（WebView 登录被拦时备用）"
+                    android:textSize="16sp"
+                    android:textColor="#666666" />
+
+                <EditText
+                    android:id="@+id/editBiliSessdata"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="电脑浏览器 F12 → Application → Cookies → 复制 SESSDATA 的值"
+                    android:inputType="text"
+                    android:textSize="16sp" />
+
+                <Button
+                    android:id="@+id/btnBiliSaveSessdata"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="8dp"
+                    android:text="保存 SESSDATA"
+                    android:textSize="22sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="有效期说明：B站登录凭证约 30 天，App 每天都会访问一次会自动续期；若在别处改了密码或主动退出，需重新登录。"
+                    android:textColor="#999999"
+                    android:textSize="16sp" />
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
         <Button
             android:id="@+id/btnRemoteAssist"
             android:layout_width="match_parent"

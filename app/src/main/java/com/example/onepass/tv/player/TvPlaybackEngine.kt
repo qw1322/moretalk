@@ -20,6 +20,17 @@ sealed class TvPlaybackState {
 
     /** 播放失败，[reason] 用于日志，不直接展示给老人 */
     class Failed(val reason: String) : TvPlaybackState()
+
+    /**
+     * 画面能出、但**音频安卓解不了**（实测是 MP2 / MP1）。
+     *
+     * 为什么要单独报这一种：安卓平台**不带 MP2 解码器**（MPEG-1 Layer II），
+     * 而部分 IPTV 源（实测 CCTV-3 的某条源就是）音轨用 MP2 —— 表现是
+     * 「连得上、有画面、**一点声音都没有**」，比黑屏更隐蔽：
+     * 播放器不报错，老人只会以为电视坏了。
+     * 有了这个状态，上层就能像处理「源失效」一样自动换源/换台。
+     */
+    class NoAudio(val mime: String?) : TvPlaybackState()
 }
 
 /**

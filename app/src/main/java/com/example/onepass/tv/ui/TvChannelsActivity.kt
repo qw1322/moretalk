@@ -65,7 +65,7 @@ class TvChannelsActivity : AppCompatActivity() {
         titleText.text = category.displayName
 
         // 缓存是完整清单（几百个台），这里只取当前分类；分类判定见 TvClassifier
-        channels = TvRepository.byCategory(TvRepository.cached(this), category)
+        channels = TvRepository.byCategory(this, TvRepository.cached(this), category)
         render(
             getString(
                 if (TvRepository.isUsingBuiltinFallback(this)) R.string.tv_channels_source_builtin
@@ -114,7 +114,7 @@ class TvChannelsActivity : AppCompatActivity() {
                 countText.text = getString(R.string.tv_channels_refresh_failed)
                 return@launch
             }
-            channels = TvRepository.byCategory(fresh, category)
+            channels = TvRepository.byCategory(this@TvChannelsActivity, fresh, category)
             render(getString(R.string.tv_channels_refresh_done, channels.size))
         }
     }

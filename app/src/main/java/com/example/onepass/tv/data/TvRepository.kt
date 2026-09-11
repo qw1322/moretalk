@@ -7,6 +7,10 @@ import com.example.onepass.tv.model.TvChannel
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -31,10 +35,23 @@ object TvRepository {
     private const val CACHE_TIME_FILE = "tv_channels_cache.time"
     private const val CACHE_TTL_MS = 6 * 60 * 60 * 1000L
 
-    /** B站点播列表的独立缓存：**24 小时**才重搜一次（搜索接口有风控，见 [BiliClient]） */
+    /**
+     * B站点播缓存：**按关键词**存一份（`Map<关键词, 该批结果>`）。
+     *
+     * 拆开存的意义见 [loadBiliChannels] —— 风控只会打掉某一批，不会让整个列表腰斩。
+     * 单批 3 天才重搜：视频内容变化很慢，而搜索接口有风控，调用越少越安全。
+     */
     private const val BILI_CACHE_FILE = "tv_bili_cache.json"
-    private const val BILI_CACHE_TIME_FILE = "tv_bili_cache.time"
-    private const val BILI_CACHE_TTL_MS = 24 * 60 * 60 * 1000L
+    private const val BILI_TTL_MS = 3 * 24 * 60 * 60 * 1000L
+
+    /** 每轮最多补搜几个关键词（把突发请求摊开，降低风控概率） */
+    private const val BILI_BATCH = 3
+
+    /** 动态地址抓取的并发度（18 个源站页面，并发太高会把源站打挂） */
+    private const val DYNAMIC_CONCURRENCY = 6
+
+    /** 关键词之间的间隔（实测：B站 限频率，连发必被拦） */
+    private const val BILI_GAP_MS = 1500L
 
     /**
      * 远程清单源。顺序即优先级；单个失败不影响整体。
@@ -63,19 +80,42 @@ object TvRepository {
         val urlPattern: Regex
     )
 
-    private val dynamicSources: List<DynamicSource> = listOf(
-        DynamicSource(
-            channelId = "cctv11",
-            pageUrl = "https://www.waadri.top/TV/CCTV/cctv11.php?id=3",
-            urlPattern = Regex("""https://[^\s"'<>]*miguvideo[^\s"'<>]*\.m3u8[^\s"'<>]*""")
-        ),
-        DynamicSource(
-            channelId = "梨园",
-            // 河南台「梨园频道」页（路径里有中文，用百分号编码，避免 OkHttp 报 URL 非法）
-            pageUrl = "https://www.waadri.top/TV/%E6%B2%B3%E5%8D%97/HNLYPD.php",
-            urlPattern = Regex("""https://[^\s"'<>]*hntv\.tv[^\s"'<>]*\.m3u8[^\s"'<>]*""")
+    /** 咪咕源（h264 + **aac**，720p/480p，国内 CDN）—— 央视各台用这个 */
+    private val MIGU_RE = Regex("""https://[^\s"'<>]*miguvideo[^\s"'<>]*\.m3u8[^\s"'<>]*""")
+
+    /** 河南台官方源（腾讯云防盗链，txTime 到 2035 年） */
+    private val HNTV_RE = Regex("""https://[^\s"'<>]*hntv\.tv[^\s"'<>]*\.m3u8[^\s"'<>]*""")
+
+    /**
+     * 每个源站页面的 `id` 是**线路号**，不同频道能出地址的线路不一样
+     * （实测：cctv1/2/5/6 走 id=2，cctv3/cctv11 走 id=3）——
+     * 所以按顺序试几个，取第一个能用的，别写死一个。
+     */
+    private val LINE_IDS = listOf(2, 3, 1, 4)
+
+    private val dynamicSources: List<DynamicSource> = buildList {
+        // 央视 1~17：静态源实测 104 条里只有 17 条能下分片，且 CCTV-1 唯一那条是跨境源
+        // （下行仅 68KB/s，720p 必然卡顿 + 音画不同步）；咪咕这条是国内 CDN，实测 1MB/s 级。
+        for (i in 1..17) {
+            add(
+                DynamicSource(
+                    channelId = "cctv$i",
+                    pageUrl = "https://www.waadri.top/TV/CCTV/cctv$i.php",
+                    urlPattern = MIGU_RE
+                )
+            )
+        }
+        // 戏曲：梨园（河南台官方源）
+        add(
+            DynamicSource(
+                channelId = "梨园",
+                // 河南台「梨园频道」页（路径里有中文，用百分号编码，避免 OkHttp 报 URL 非法）
+                pageUrl = "https://www.waadri.top/TV/%E6%B2%B3%E5%8D%97/HNLYPD.php",
+                urlPattern = HNTV_RE
+            )
         )
-    )
+    }
+
 
 
     private val client: OkHttpClient by lazy {
@@ -88,6 +128,7 @@ object TvRepository {
 
     private val gson = Gson()
     private val listType = object : TypeToken<List<TvChannel>>() {}.type
+    private val biliMapType = object : TypeToken<Map<String, BiliCacheEntry>>() {}.type
 
     // ------------------------------------------------------------------ 对外 API
 
@@ -127,8 +168,10 @@ object TvRepository {
      * 刻意放在这一层而不是 `load()` 里：清单缓存保持完整（几百条全存），
      * 这样调整 [TvClassifier] 的判定规则立刻生效，不用等 6 小时缓存过期。
      */
-    fun byCategory(channels: List<TvChannel>, category: TvCategory): List<TvChannel> {
-        val list = channels.filter { it.playable && TvClassifier.categoryOf(it) == category }
+    fun byCategory(context: Context, channels: List<TvChannel>, category: TvCategory): List<TvChannel> {
+        // 先把「连续失败到阈值」的台滤掉 —— 让列表自己变干净（见 [TvPlaybackStats]）
+        val alive = channels.filterNot { TvPlaybackStats.isHidden(context, it.id) }
+        val list = alive.filter { it.playable && TvClassifier.categoryOf(it) == category }
         val pins = PINNED_FIRST[category] ?: return list
         val pinned = list.filter { ch -> pins.any { ch.name.contains(it) } }
         if (pinned.isEmpty()) return list
@@ -166,7 +209,7 @@ object TvRepository {
     // ------------------------------------------------------------------ 内部实现
 
     /** 逐个拉远程源，成功即累积；全失败返回空列表（由调用方兜底） */
-    private fun fetchRemote(): List<TvChannel> {
+    private suspend fun fetchRemote(): List<TvChannel> {
         val collected = LinkedHashMap<String, TvChannel>()
         for (url in remoteSources) {
             val text = runCatching { fetchText(url) }.getOrElse {
@@ -188,79 +231,109 @@ object TvRepository {
     }
 
     /**
-     * 抓 waadri 页面刷新戏曲两台的签名地址，插到各自频道的最前面。
+     * 抓源站页面刷新动态地址，插到各自频道的最前面。
      * 抓不到就原样返回（静态源继续兜底），绝不让刷新失败影响整个列表。
+     *
+     * 18 台串行抓要十几秒、明显拖慢「第一次进看电视」的体感，所以**分批并发**；
+     * 并发压到 [DYNAMIC_CONCURRENCY] 是为了别把源站打挂（打挂了大家都没得看）。
      */
-    private fun applyDynamicSources(channels: List<TvChannel>): List<TvChannel> {
-        if (channels.isEmpty()) return channels
-        val fresh = HashMap<String, String>()
-        for (src in dynamicSources) {
-            val url = runCatching { fetchDynamicUrl(src) }.getOrElse {
-                Log.w(TAG, "动态地址失败 ${src.channelId}: ${it.javaClass.simpleName}")
-                null
-            } ?: continue
-            fresh[src.channelId] = url
+    private suspend fun applyDynamicSources(channels: List<TvChannel>): List<TvChannel> =
+        withContext(Dispatchers.IO) {
+            if (channels.isEmpty()) return@withContext channels
+            val fresh = mutableMapOf<String, String>()
+            dynamicSources.chunked(DYNAMIC_CONCURRENCY).forEach { batch ->
+                val got = batch.map { src ->
+                    async {
+                        src.channelId to runCatching { fetchDynamicUrl(src) }.getOrNull()
+                    }
+                }.awaitAll()
+                got.forEach { (id, url) -> if (!url.isNullOrBlank()) fresh[id] = url }
+            }
+            if (fresh.isEmpty()) return@withContext channels
+            Log.d(TAG, "动态刷新成功 ${fresh.size} 台: ${fresh.keys}")
+            channels.map { ch ->
+                val u = fresh[ch.id] ?: return@map ch
+                if (u in ch.urls) ch else ch.copy(urls = listOf(u) + ch.urls)
+            }
         }
-        if (fresh.isEmpty()) return channels
-        Log.d(TAG, "动态刷新成功: ${fresh.keys}")
-        return channels.map { ch ->
-            val u = fresh[ch.id] ?: return@map ch
-            if (u in ch.urls) ch else ch.copy(urls = listOf(u) + ch.urls)
-        }
-    }
 
-    private fun fetchDynamicUrl(src: DynamicSource): String? {
-        val html = fetchText(src.pageUrl) ?: return null
-        return src.urlPattern.find(html)?.value
+    /** 依次试几条线路（不同频道能出地址的线路不同），拿到第一个可用地址 */
+    private suspend fun fetchDynamicUrl(src: DynamicSource): String? {
+        for (line in LINE_IDS) {
+            val html = fetchText("${src.pageUrl}?id=$line") ?: continue
+            val url = src.urlPattern.find(html)?.value
+            if (!url.isNullOrBlank()) return url
+        }
+        return null
     }
 
     /**
-     * B站点播唱段：独立缓存 24h。
+     * B站点播唱段：**按关键词独立缓存 + 分批补搜**。
      *
-     * 搜索接口有风控，所以**宁可拿旧列表也不频繁重搜**：
-     * 过期才搜一次；搜不到（风控/断网）时保留旧缓存，不把 B站内容清空。
+     * 为什么要这么麻烦（两个坑换来的）：
+     *   ① **风控腰斩**：一次把 8 个关键词全打过去，被限流就是整批失败 ——
+     *      实测发生过「4 个关键词挂 2 个，唱段从 43 条掉到 12 条」。
+     *      拆成按关键词缓存后，失败的批次只是缺席，已成功的一直留着，下一轮自动补搜。
+     *   ② **协程取消**：一轮拉取十几秒，挂在 Activity 的协程上时，老人从分类页点进播放页
+     *      就会 `JobCancellationException` —— 请求白费、缓存也没写成。所以补搜用
+     *      [NonCancellable] 护住，务必把结果落盘。
+     *
+     * 每轮最多补搜 [BILI_BATCH] 个关键词、之间留 [BILI_GAP_MS] 间隔，把突发请求摊开；
+     * 单批成功即写盘、立即返回当前全部内容（老人不必等 8 批全跑完）。
      */
     private suspend fun loadBiliChannels(context: Context): List<TvChannel> {
-        val cached = readBiliCache(context)
-        if (cached != null &&
-            System.currentTimeMillis() - biliCacheTime(context) < BILI_CACHE_TTL_MS
-        ) {
-            return cached
+        val cache = readBiliMap(context).toMutableMap()
+        val now = System.currentTimeMillis()
+        val stale = BiliClient.KEYWORDS.filter { kw ->
+            val e = cache[kw]
+            e == null || e.channels.isEmpty() || now - e.at >= BILI_TTL_MS
         }
-        val fetched = runCatching { BiliClient.fetchOperaChannels() }
-            .getOrElse {
-                Log.w(TAG, "B站拉取失败: ${it.javaClass.simpleName}")
-                emptyList()
+        if (stale.isNotEmpty()) {
+            val batch = stale.take(BILI_BATCH)
+            Log.d(TAG, "B站补搜 ${batch.size} 批（共 ${stale.size} 批待补）")
+            var changed = false
+            withContext(NonCancellable) {
+                for (kw in batch) {
+                    val chs = runCatching { BiliClient.fetchByKeyword(context, kw) }
+                        .onFailure { Log.w(TAG, "B站「$kw」失败: ${it.javaClass.simpleName}") }
+                        .getOrNull()
+                    if (!chs.isNullOrEmpty()) {
+                        cache[kw] = BiliCacheEntry(now, chs)
+                        changed = true
+                    }
+                    delay(BILI_GAP_MS)   // 摊开请求，降低风控概率
+                }
             }
-        return if (fetched.isNotEmpty()) {
-            saveBiliCache(context, fetched)
-            fetched
-        } else {
-            cached ?: emptyList()
+            if (changed) saveBiliMap(context, cache)
         }
+        val all = cache.values.flatMap { it.channels }.distinctBy { it.id }
+        Log.d(
+            TAG,
+            "B站唱段合计 ${all.size} 条（已成功 ${cache.count { it.value.channels.isNotEmpty() }}/${BiliClient.KEYWORDS.size} 批）"
+        )
+        return BiliClient.sortHdFirst(all)
     }
 
     private fun biliCacheFile(context: Context) = File(context.filesDir, BILI_CACHE_FILE)
-    private fun biliCacheTimeFile(context: Context) = File(context.filesDir, BILI_CACHE_TIME_FILE)
 
-    private fun readBiliCache(context: Context): List<TvChannel>? = runCatching {
+    /** 关键词 → 该批结果与时间戳 */
+    private data class BiliCacheEntry(
+        val at: Long = 0L,
+        val channels: List<TvChannel> = emptyList()
+    )
+
+    private fun readBiliMap(context: Context): Map<String, BiliCacheEntry> = runCatching {
         val f = biliCacheFile(context)
-        if (!f.exists()) return null
-        gson.fromJson<List<TvChannel>>(f.readText(), listType)?.filter { it.urls.isNotEmpty() }
+        if (!f.exists()) return emptyMap()
+        gson.fromJson<Map<String, BiliCacheEntry>>(f.readText(), biliMapType) ?: emptyMap()
     }.getOrElse {
         Log.w(TAG, "B站缓存损坏，忽略: ${it.javaClass.simpleName}")
-        null
+        emptyMap()
     }
 
-    private fun saveBiliCache(context: Context, channels: List<TvChannel>) = runCatching {
-        biliCacheFile(context).writeText(gson.toJson(channels))
-        biliCacheTimeFile(context).writeText(System.currentTimeMillis().toString())
+    private fun saveBiliMap(context: Context, map: Map<String, BiliCacheEntry>) = runCatching {
+        biliCacheFile(context).writeText(gson.toJson(map))
     }.onFailure { Log.w(TAG, "写B站缓存失败: ${it.javaClass.simpleName}") }
-
-    private fun biliCacheTime(context: Context): Long = runCatching {
-        val f = biliCacheTimeFile(context)
-        if (f.exists()) f.readText().toLongOrNull() ?: 0L else 0L
-    }.getOrDefault(0L)
 
     /**
      * 把内置种子并进远程清单：

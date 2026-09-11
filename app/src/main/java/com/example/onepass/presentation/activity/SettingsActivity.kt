@@ -30,6 +30,7 @@ import com.example.onepass.service.FloatingHomeButtonService
 import com.example.onepass.service.SosHelper
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
+import com.example.onepass.tv.data.BiliAccount
 import com.google.android.accessibility.selecttospeak.SelectToSpeakService
 
 class SettingsActivity : AppCompatActivity() {
@@ -138,6 +139,24 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var editLocationServer: EditText
     private lateinit var editLocationDeviceId: EditText
     private lateinit var btnLocationSave: Button
+
+    // B站戏曲设置（v1.9.7）
+    private lateinit var textBiliStatus: TextView
+    private lateinit var btnBiliLogin: Button
+    private lateinit var btnBiliLogout: Button
+    private lateinit var biliQualityGroup: RadioGroup
+    private lateinit var radioBiliAuto: RadioButton
+    private lateinit var radioBiliHigh: RadioButton
+    private lateinit var radioBiliLow: RadioButton
+    private lateinit var editBiliSessdata: EditText
+    private lateinit var btnBiliSaveSessdata: Button
+
+    /** B站登录页返回后刷新状态显示 */
+    private val biliLoginLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        refreshBiliStatus()
+    }
 
     /** 测试短信的短信权限请求 */
     private val sosSmsPermissionLauncher = registerForActivityResult(
@@ -323,6 +342,16 @@ class SettingsActivity : AppCompatActivity() {
         editLocationDeviceId = findViewById(R.id.editLocationDeviceId)
         btnLocationSave = findViewById(R.id.btnLocationSave)
 
+        textBiliStatus = findViewById(R.id.textBiliStatus)
+        btnBiliLogin = findViewById(R.id.btnBiliLogin)
+        btnBiliLogout = findViewById(R.id.btnBiliLogout)
+        biliQualityGroup = findViewById(R.id.biliQualityGroup)
+        radioBiliAuto = findViewById(R.id.radioBiliAuto)
+        radioBiliHigh = findViewById(R.id.radioBiliHigh)
+        radioBiliLow = findViewById(R.id.radioBiliLow)
+        editBiliSessdata = findViewById(R.id.editBiliSessdata)
+        btnBiliSaveSessdata = findViewById(R.id.btnBiliSaveSessdata)
+
         textDateStyle = findViewById(R.id.textDateStyle)
         textCommonAppsTitle = findViewById(R.id.textCommonAppsTitle)
         textContactsTitle = findViewById(R.id.textContactsTitle)
@@ -429,9 +458,64 @@ class SettingsActivity : AppCompatActivity() {
         val commonAppsSet = getSharedPreferences(COMMON_APPS_PREFS, Context.MODE_PRIVATE)
             .getStringSet(KEY_COMMON_APPS, HashSet<String>())
         loadCommonApps(commonAppsSet)
+
+        // B站画质偏好（默认「自动」）
+        when (BiliAccount.qualityMode(this)) {
+            BiliAccount.MODE_HIGH -> radioBiliHigh.isChecked = true
+            BiliAccount.MODE_LOW -> radioBiliLow.isChecked = true
+            else -> radioBiliAuto.isChecked = true
+        }
+        refreshBiliStatus()
+    }
+
+    /** 刷新 B站登录状态与当前生效画质（登录页返回、退出登录后都要调） */
+    private fun refreshBiliStatus() {
+        val logged = BiliAccount.isLoggedIn(this)
+        textBiliStatus.text = BiliAccount.describe(this) + "\n" + BiliAccount.describeQuality(this)
+        textBiliStatus.setTextColor(
+            if (logged) android.graphics.Color.parseColor("#2E7D32")
+            else android.graphics.Color.parseColor("#666666")
+        )
+        btnBiliLogout.isEnabled = logged
+        btnBiliLogin.text = if (logged) "重新登录 B站" else "登录 B站"
     }
 
     private fun setupListeners() {
+        // ---- B站戏曲（v1.9.7）----
+        btnBiliLogin.setOnClickListener {
+            biliLoginLauncher.launch(
+                android.content.Intent(this, com.example.onepass.tv.ui.BiliLoginActivity::class.java)
+            )
+        }
+        btnBiliLogout.setOnClickListener {
+            BiliAccount.logout(this)
+            editBiliSessdata.setText("")
+            refreshBiliStatus()
+            Toast.makeText(this, "已退出 B站登录，本机凭证已清除", Toast.LENGTH_SHORT).show()
+        }
+        biliQualityGroup.setOnCheckedChangeListener { _, checkedId ->
+            val mode = when (checkedId) {
+                R.id.radioBiliHigh -> BiliAccount.MODE_HIGH
+                R.id.radioBiliLow -> BiliAccount.MODE_LOW
+                else -> BiliAccount.MODE_AUTO
+            }
+            BiliAccount.saveQualityMode(this, mode)
+            refreshBiliStatus()
+            // 画质只影响下次起播（B站 直链是一次性的，不能中途换）
+            Toast.makeText(this, "已保存画质设置，下次播放生效", Toast.LENGTH_SHORT).show()
+        }
+        btnBiliSaveSessdata.setOnClickListener {
+            val v = editBiliSessdata.text.toString().trim()
+            if (v.isBlank()) {
+                Toast.makeText(this, "请先粘贴 SESSDATA", Toast.LENGTH_SHORT).show()
+            } else {
+                BiliAccount.saveSessData(this, v)
+                editBiliSessdata.setText("")
+                refreshBiliStatus()
+                Toast.makeText(this, "已保存 B站 凭证", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         dateStyleGroup.setOnCheckedChangeListener { _, checkedId ->
             val isLunar = checkedId == R.id.radioLunar
             prefs.edit()

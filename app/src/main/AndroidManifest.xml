@@ -127,5 +127,11 @@
         android:name=".tv.ui.TvChannelsActivity"
         android:exported="false"
         android:label="选择频道" />
+    <!-- B站登录页（WebView，v1.9.7）：登录后自动抓 SESSDATA 存本机，用于解锁 720P -->
+    <activity
+        android:name=".tv.ui.BiliLoginActivity"
+        android:exported="false"
+        android:label="登录 B站"
+        android:configChanges="orientation|screenSize|keyboardHidden" />
   </application>
 </manifest>

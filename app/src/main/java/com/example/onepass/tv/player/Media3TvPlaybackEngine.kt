@@ -2,12 +2,15 @@ package com.example.onepass.tv.player
 
 import android.content.Context
 import android.graphics.Color
+import android.util.Log
 import android.view.ViewGroup
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -80,6 +83,25 @@ class Media3TvPlaybackEngine(private val context: Context) : TvPlaybackEngine {
 
             override fun onRenderedFirstFrame() {
                 renderedVideo = true
+            }
+
+            /**
+             * 音轨一旦确定就检查一次编码。
+             *
+             * 安卓不带 MP2/MP1 解码器，遇到这类源是「有画面、没声音」，而且**不报错** ——
+             * 老人只会以为电视坏了。这里主动识别并上报，让 [com.example.onepass.tv.ui.TvPlayerActivity]
+             * 按「这条源不能用」处理（换下一条源，全都不行就换台）。
+             */
+            override fun onTracksChanged(tracks: Tracks) {
+                val mime = tracks.groups
+                    .firstOrNull { it.type == C.TRACK_TYPE_AUDIO }
+                    ?.takeIf { it.length > 0 }
+                    ?.getTrackFormat(0)
+                    ?.sampleMimeType
+                if (mime == MimeTypes.AUDIO_MPEG_L2 || mime == MimeTypes.AUDIO_MPEG_L1) {
+                    Log.w(TAG, "音频编码 $mime 安卓不支持（MP2/MP1），上报换源")
+                    emit(TvPlaybackState.NoAudio(mime))
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -239,6 +261,8 @@ class Media3TvPlaybackEngine(private val context: Context) : TvPlaybackEngine {
     }
 
     companion object {
+        private const val TAG = "Media3Engine"
+
         /** 桌面端常见 UA，规避个别 CDN 的空 UA 拦截 */
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +

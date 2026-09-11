@@ -22,6 +22,7 @@ import com.example.onepass.tv.cast.Dlna
 import com.example.onepass.tv.cast.DlnaDevice
 import com.example.onepass.tv.data.BiliClient
 import com.example.onepass.tv.data.BuiltinChannelSeed
+import com.example.onepass.tv.data.TvPlaybackStats
 import com.example.onepass.tv.data.TvRepository
 import com.example.onepass.tv.model.TvCategory
 import com.example.onepass.tv.model.TvChannel
@@ -216,7 +217,7 @@ class TvPlayerActivity : AppCompatActivity() {
         )
         if (returnedCategory != category) {
             category = returnedCategory
-            channels = TvRepository.byCategory(TvRepository.cached(this), category)
+            channels = TvRepository.byCategory(this, TvRepository.cached(this), category)
         }
 
         val idx = channels.indexOfFirst { it.id == id }
@@ -248,7 +249,7 @@ class TvPlayerActivity : AppCompatActivity() {
 
         // 只取当前分类的台：缓存里是完整清单（几百个台），不过滤的话
         // 「上一个/下一个」会翻到一堆地方台和垃圾条目。分类判定见 TvClassifier。
-        channels = TvRepository.byCategory(TvRepository.cached(this), category)
+        channels = TvRepository.byCategory(this, TvRepository.cached(this), category)
         currentIndex = resolveStartIndex()
         setupButtons()
 
@@ -575,7 +576,7 @@ class TvPlayerActivity : AppCompatActivity() {
             // B站点播条目：列表里存的是 `bili://<bvid>/<cid>`，真实地址是**短时效签名 URL**，
             // 只能在播放前才换。换不到就当这条源失败，走「换下一条源」的既有容错逻辑。
             uiScope.launch {
-                val real = BiliClient.resolvePlayUrl(raw)
+                val real = BiliClient.resolvePlayUrl(this@TvPlayerActivity, raw)
                 if (released || urlIndex != index) return@launch
                 if (real.isNullOrBlank()) {
                     Log.w(TAG, "B站直链解析失败，换下一条源: $raw")
@@ -620,9 +621,17 @@ class TvPlayerActivity : AppCompatActivity() {
                 autoSwitchCount = 0
                 triedChannelIds.clear()
                 hideStatus()
+                // 播起来了 → 清掉这个台的失败计数（源恢复了要立刻让它回到列表）
+                currentChannel()?.let { TvPlaybackStats.recordSuccess(this, it.id) }
             }
             TvPlaybackState.Ended -> switchChannel(+1)
             TvPlaybackState.Idle -> Unit
+            is TvPlaybackState.NoAudio -> {
+                // 画面能出但音轨是 MP2/MP1（安卓没有解码器）→ 当成「这条源不能用」，
+                // 走和源失效完全相同的换源/换台链路，老人不用知道背后发生了什么。
+                Log.w(TAG, "源音频不支持(${state.mime})，换源：${currentChannel()?.name}")
+                handleFailure("no-audio:${state.mime}")
+            }
             is TvPlaybackState.Failed -> {
                 Log.w(TAG, "播放失败(${currentChannel()?.name}): ${state.reason}")
                 handleFailure(state.reason)
@@ -649,6 +658,9 @@ class TvPlayerActivity : AppCompatActivity() {
         if (autoSwitchCount < MAX_AUTO_SWITCH) {
             autoSwitchCount++
             triedChannelIds.add(ch.id)
+            // 这个台连同它的所有备用源都不行（含「音频安卓解不了」）→ 记一笔。
+            // 连续几次后 [TvPlaybackStats] 会让它从分类里消失，老人不必反复踩同一个坑。
+            TvPlaybackStats.recordFail(this, ch.id)
             showStatus(getString(R.string.tv_status_trying))
             speaker.speak(getString(R.string.tv_speak_failed))
             uiScope.launch {
@@ -746,7 +758,7 @@ class TvPlayerActivity : AppCompatActivity() {
      */
     private fun applyRefreshedChannels(fresh: List<TvChannel>) {
         val playingId = currentChannel()?.id
-        channels = TvRepository.byCategory(fresh, category)
+        channels = TvRepository.byCategory(this, fresh, category)
         if (playingId != null) {
             val idx = channels.indexOfFirst { it.id == playingId }
             if (idx >= 0) currentIndex = idx
