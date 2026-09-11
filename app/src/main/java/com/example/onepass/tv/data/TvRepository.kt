@@ -33,7 +33,14 @@ object TvRepository {
     private const val TAG = "TvRepository"
     private const val CACHE_FILE = "tv_channels_cache.json"
     private const val CACHE_TIME_FILE = "tv_channels_cache.time"
-    private const val CACHE_TTL_MS = 6 * 60 * 60 * 1000L
+    /**
+     * 清单缓存有效期。**从 6 小时缩到 1 小时**（用户反馈「进来看不到自动刷新」）：
+     *   · 老人的使用节奏就是「想起来才开一次」，1 小时足够挡住频繁重拉；
+     *   · 咪咕的动态地址是**带时效的签名 URL**，缓存越久越可能拿到过期地址导致「点开播不了」，
+     *     1 小时刷新一次明显更稳；
+     *   · 打开页面先用缓存秒开，新清单在后台拉完再校正台数（不会让老人干等）。
+     */
+    private const val CACHE_TTL_MS = 60 * 60 * 1000L
 
     /**
      * B站点播缓存：**按关键词**存一份（`Map<关键词, 该批结果>`）。
@@ -43,6 +50,12 @@ object TvRepository {
      */
     private const val BILI_CACHE_FILE = "tv_bili_cache.json"
     private const val BILI_TTL_MS = 3 * 24 * 60 * 60 * 1000L
+
+    /** 与设置页共用的偏好文件名 */
+    private const val PREFS_NAME = "OnePassPrefs"
+
+    /** 「高清优先」开关的 key（设置页写、这里读） */
+    const val KEY_TV_PREFER_HD = "tv_prefer_hd"
 
     /** 每轮最多补搜几个关键词（把突发请求摊开，降低风控概率） */
     private const val BILI_BATCH = 3
@@ -149,7 +162,7 @@ object TvRepository {
             if (!forceRefresh && isCacheFresh(context)) {
                 readCache(context)?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
             }
-            val remote = fetchRemote()
+            val remote = fetchRemote(context)
             val bili = loadBiliChannels(context)
             val base = when {
                 remote.isNotEmpty() -> remote
@@ -209,7 +222,7 @@ object TvRepository {
     // ------------------------------------------------------------------ 内部实现
 
     /** 逐个拉远程源，成功即累积；全失败返回空列表（由调用方兜底） */
-    private suspend fun fetchRemote(): List<TvChannel> {
+    private suspend fun fetchRemote(context: Context): List<TvChannel> {
         val collected = LinkedHashMap<String, TvChannel>()
         for (url in remoteSources) {
             val text = runCatching { fetchText(url) }.getOrElse {
@@ -227,17 +240,26 @@ object TvRepository {
                 }
             }
         }
-        return applyDynamicSources(mergeWithBuiltin(collected.values.toList()))
+        return applyDynamicSources(context, mergeWithBuiltin(collected.values.toList()))
     }
 
     /**
-     * 抓源站页面刷新动态地址，插到各自频道的最前面。
+     * 抓源站页面刷新动态地址，插到各自频道里。
      * 抓不到就原样返回（静态源继续兜底），绝不让刷新失败影响整个列表。
      *
      * 18 台串行抓要十几秒、明显拖慢「第一次进看电视」的体感，所以**分批并发**；
      * 并发压到 [DYNAMIC_CONCURRENCY] 是为了别把源站打挂（打挂了大家都没得看）。
+     *
+     * **咪咕源插哪儿取决于「高清优先」开关**（[KEY_TV_PREFER_HD]）：
+     *   · 关闭（默认）：咪咕插第一位 —— 它稳、覆盖全部央视台，缺点是只有 1200kbps(720p)；
+     *   · 打开：种子里**实测 1080p** 的源继续打头，咪咕退到第二位 —— 更清楚，
+     *     但码率高 4~6 倍，弱网/流量下更容易卡。只对「种子里确实有高清源」的台生效，
+     *     其他台（如 CCTV-1，没有可用的 1080p 源）依旧用咪咕，不会因为开了开关反而变差。
      */
-    private suspend fun applyDynamicSources(channels: List<TvChannel>): List<TvChannel> =
+    private suspend fun applyDynamicSources(
+        context: Context,
+        channels: List<TvChannel>
+    ): List<TvChannel> =
         withContext(Dispatchers.IO) {
             if (channels.isEmpty()) return@withContext channels
             val fresh = mutableMapOf<String, String>()
@@ -250,12 +272,30 @@ object TvRepository {
                 got.forEach { (id, url) -> if (!url.isNullOrBlank()) fresh[id] = url }
             }
             if (fresh.isEmpty()) return@withContext channels
-            Log.d(TAG, "动态刷新成功 ${fresh.size} 台: ${fresh.keys}")
+            val preferHd = isPreferHd(context)
+            Log.d(TAG, "动态刷新成功 ${fresh.size} 台（高清优先=$preferHd）: ${fresh.keys}")
             channels.map { ch ->
                 val u = fresh[ch.id] ?: return@map ch
-                if (u in ch.urls) ch else ch.copy(urls = listOf(u) + ch.urls)
+                if (u in ch.urls) return@map ch
+                val first = ch.urls.firstOrNull()
+                if (preferHd && first != null && first in seedUrls) {
+                    ch.copy(urls = listOf(first, u) + ch.urls.drop(1))   // 高清源打头，咪咕备用
+                } else {
+                    ch.copy(urls = listOf(u) + ch.urls)                  // 咪咕打头（默认）
+                }
             }
         }
+
+    /** 种子里的地址集合：用来判断「这个台有没有人工实测过的高清源」 */
+    private val seedUrls: Set<String> by lazy {
+        BuiltinChannelSeed.channels().flatMap { it.urls }.toSet()
+    }
+
+    /** 「高清优先」是否打开（与设置页共用 OnePassPrefs） */
+    fun isPreferHd(context: Context): Boolean =
+        context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_TV_PREFER_HD, false)
 
     /** 依次试几条线路（不同频道能出地址的线路不同），拿到第一个可用地址 */
     private suspend fun fetchDynamicUrl(src: DynamicSource): String? {

@@ -1272,6 +1272,53 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
+        <!-- 看电视画质（v1.9.9）-->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/tvQualityCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/textTvPreferHdTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="高清优先"
+                        android:textSize="27sp"
+                        android:textStyle="bold" />
+
+                    <android.widget.Switch
+                        android:id="@+id/switchTvPreferHd"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/textTvPreferHdDesc"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="开启后优先用 1080P 高清源（更清楚）；关闭时用咪咕 720P 源（更稳，不卡）。高清源码率高 4~6 倍，网络不好时容易卡——卡了就关掉。只有部分频道有高清源，其余频道不受影响。"
+                    android:textColor="#999999"
+                    android:textSize="16sp" />
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
         <!-- B站戏曲设置（v1.9.7）-->
         <androidx.cardview.widget.CardView
             android:id="@+id/biliSettingsCard"
@@ -1347,7 +1394,7 @@
                         android:id="@+id/radioBiliAuto"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="自动：WiFi 高清 1080P / 流量省流 360P"
+                        android:text="自动（WiFi 高清 / 流量省流）"
                         android:textSize="20sp" />
 
                     <RadioButton
@@ -1355,7 +1402,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:text="始终高清（1080P，约 460MB/小时）"
+                        android:text="高清 1080P（约 460MB/小时）"
                         android:textSize="20sp" />
 
                     <RadioButton
@@ -1363,7 +1410,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:text="始终省流量（360P，约 58MB/小时）"
+                        android:text="省流量 360P（约 58MB/小时）"
                         android:textSize="20sp" />
                 </RadioGroup>
 

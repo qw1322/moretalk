@@ -57,6 +57,19 @@ class TvCategoryActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 回到本页就重新读一次缓存。
+     *
+     * 为什么必须在这刷新（踩过坑）：老人从播放页点「换台」进去、按了「重新获取」，
+     * 那边把新清单一拉、缓存也写了 —— 但**本页的台数只在 onCreate 算过一次**，
+     * 返回后数字还是旧的，看起来就像「刷新没生效」。onResume 重读即可对齐。
+     */
+    override fun onResume() {
+        super.onResume()
+        runCatching { applyCounts(TvRepository.cached(this)) }
+            .onFailure { Log.w(TAG, "重读缓存失败: ${it.javaClass.simpleName}") }
+    }
+
     override fun onDestroy() {
         uiScope.cancel()
         super.onDestroy()

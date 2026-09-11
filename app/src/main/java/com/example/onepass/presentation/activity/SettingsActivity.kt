@@ -31,6 +31,7 @@ import com.example.onepass.service.SosHelper
 import com.example.onepass.service.SpeechEngineMode
 import com.example.onepass.service.WeChatMessageReader
 import com.example.onepass.tv.data.BiliAccount
+import com.example.onepass.tv.data.TvRepository
 import com.google.android.accessibility.selecttospeak.SelectToSpeakService
 
 class SettingsActivity : AppCompatActivity() {
@@ -150,6 +151,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var radioBiliLow: RadioButton
     private lateinit var editBiliSessdata: EditText
     private lateinit var btnBiliSaveSessdata: Button
+
+    // 看电视画质（v1.9.9）
+    private lateinit var switchTvPreferHd: Switch
 
     /** B站登录页返回后刷新状态显示 */
     private val biliLoginLauncher = registerForActivityResult(
@@ -352,6 +356,8 @@ class SettingsActivity : AppCompatActivity() {
         editBiliSessdata = findViewById(R.id.editBiliSessdata)
         btnBiliSaveSessdata = findViewById(R.id.btnBiliSaveSessdata)
 
+        switchTvPreferHd = findViewById(R.id.switchTvPreferHd)
+
         textDateStyle = findViewById(R.id.textDateStyle)
         textCommonAppsTitle = findViewById(R.id.textCommonAppsTitle)
         textContactsTitle = findViewById(R.id.textContactsTitle)
@@ -465,6 +471,7 @@ class SettingsActivity : AppCompatActivity() {
             BiliAccount.MODE_LOW -> radioBiliLow.isChecked = true
             else -> radioBiliAuto.isChecked = true
         }
+        switchTvPreferHd.isChecked = TvRepository.isPreferHd(this)
         refreshBiliStatus()
     }
 
@@ -481,6 +488,19 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun setupListeners() {
+        // ---- 看电视画质：高清优先（v1.9.9）----
+        switchTvPreferHd.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(TvRepository.KEY_TV_PREFER_HD, isChecked).apply()
+            // 源顺序是在「拉取频道清单」时排的，清掉时间戳让下次进「看电视」自动重排
+            runCatching { deleteFile("tv_channels_cache.time") }
+            Toast.makeText(
+                this,
+                if (isChecked) "已开启高清优先（下次进「看电视」生效，网络差可能卡）"
+                else "已关闭高清优先（改用咪咕 720P，更稳）",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+
         // ---- B站戏曲（v1.9.7）----
         btnBiliLogin.setOnClickListener {
             biliLoginLauncher.launch(

@@ -30,18 +30,28 @@ object BuiltinChannelSeed {
     /** 以 m3u 文本形式维护，方便直接把实测可用的清单粘进来 */
     private const val SEED_M3U: String = """
 #EXTM3U
-#EXTINF:-1 tvg-name="CCTV-8" group-title="央视·电视剧",CCTV-8 电视剧频道
-http://124.165.251.82:85/tsfile/live/0008_1.m3u8?key=txiptv&playlive=1&authid=0
+# 央视：这里放的是**实测 1920×1080 + aac 且下行 >1.5MB/s** 的源（2026-09-11 全量验证）。
+# 它们是「高清优先」开关打开时的首选；开关关闭时，[TvRepository] 会把咪咕 720p 源插到最前面
+# （咪咕更稳、所有央视台都有，代价是只有 1200kbps）。
+# 注意：CCTV-1 没有可用的 1080p 源（唯一那条 74.91 是跨境源、下行仅 68KB/s，会卡且音画不同步），
+# 所以它只靠咪咕 —— 那种慢源留在种子里只会让老人白等，已删除。
+#EXTINF:-1 tvg-name="CCTV2" group-title="央视",CCTV-2 财经
+http://183.203.166.28:9003/hls/2/index.m3u8
+#EXTINF:-1 tvg-name="CCTV4" group-title="央视",CCTV-4 中文国际
+http://183.203.166.28:9003/hls/3/index.m3u8
+#EXTINF:-1 tvg-name="CCTV6" group-title="央视",CCTV-6 电影
+http://183.203.166.28:9003/hls/4/index.m3u8
+#EXTINF:-1 tvg-name="CCTV8" group-title="央视",CCTV-8 电视剧
 http://183.203.166.28:9003/hls/15/index.m3u8
-#EXTINF:-1 tvg-name="CCTV-1" group-title="央视·电视剧",CCTV-1 综合
-http://74.91.26.218:82/live/cctv1hd.m3u8
+http://124.165.251.82:85/tsfile/live/0008_1.m3u8?key=txiptv&playlive=1&authid=0
+#EXTINF:-1 tvg-name="CCTV13" group-title="央视",CCTV-13 新闻
+http://ali-m-l.cztv.com/channels/lantian/channel21/1080p.m3u8
+#EXTINF:-1 tvg-name="CCTV14" group-title="央视",CCTV-14 少儿
+http://183.203.166.28:9003/hls/22/index.m3u8
 #EXTINF:-1 tvg-name="梨园" group-title="戏曲",梨园频道
 https://dxtx.hntv.tv/live/lypd.m3u8?txSecret=10c771842a0be59e8b575d765173ec96&txTime=7B923E0A&wsSecret=41543190cdf375f1c73207222bb96542&wsTime=1769313549
 #EXTINF:-1 tvg-name="CCTV11" group-title="戏曲",CCTV-11 戏曲频道
 http://112.30.73.119:9901/tsfile/live/0011_1.m3u8?key=txiptv&playlive=1&authid=0
-http://119.39.9.8:9901/tsfile/live/0011_1.m3u8?key=txiptv&playlive=1&authid=0
-http://218.13.170.98:9901/tsfile/live/0011_1.m3u8?key=txiptv&playlive=1&authid=0
-http://61.136.172.236:9901/tsfile/live/0011_1.m3u8?key=txiptv&playlive=1&authid=0
 #EXTINF:-1 tvg-name="东阳影视生活" group-title="地方影视剧场",东阳影视生活
 http://l.cztvcloud.com/channels/lantian/SXdongyang1/720p.m3u8
 #EXTINF:-1 tvg-name="浙江教科影视" group-title="地方影视剧场",浙江教科影视

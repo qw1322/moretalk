@@ -74,6 +74,7 @@
     <activity
         android:name=".presentation.activity.RemoteAssistActivity"
         android:exported="false"
+        android:screenOrientation="portrait"
         android:theme="@style/Theme.OnePass.Transparent"
         android:excludeFromRecents="true"
         android:noHistory="false" />
@@ -105,17 +106,18 @@
     </activity>
 
 
-    <activity android:name=".presentation.activity.SettingsActivity" android:exported="false" android:label="设置" />
-    <activity android:name=".presentation.activity.CommonAppsActivity" android:exported="false" android:label="常用应用" />
-    <activity android:name=".presentation.activity.ContactsActivity" android:exported="false" android:label="联系人" />
-    <activity android:name=".presentation.activity.AddContactActivity" android:exported="false" android:label="添加联系人" />
-    <activity android:name=".presentation.activity.ContactDetailActivity" android:exported="false" android:label="联系人详情" />
+    <activity android:name=".presentation.activity.SettingsActivity" android:exported="false" android:screenOrientation="portrait" android:label="设置" />
+    <activity android:name=".presentation.activity.CommonAppsActivity" android:exported="false" android:screenOrientation="portrait" android:label="常用应用" />
+    <activity android:name=".presentation.activity.ContactsActivity" android:exported="false" android:screenOrientation="portrait" android:label="联系人" />
+    <activity android:name=".presentation.activity.AddContactActivity" android:exported="false" android:screenOrientation="portrait" android:label="添加联系人" />
+    <activity android:name=".presentation.activity.ContactDetailActivity" android:exported="false" android:screenOrientation="portrait" android:label="联系人详情" />
 
     <!-- ===== 看电视（tv 模块） ===== -->
-    <!-- 分类页：点桌面「看电视」瓦片先到这里 -->
+    <!-- 分类页：点桌面「看电视」瓦片先到这里（锁竖屏；只有下面的播放页不锁，横屏看视频更舒服） -->
     <activity
         android:name=".tv.ui.TvCategoryActivity"
         android:exported="false"
+        android:screenOrientation="portrait"
         android:label="看电视" />
     <activity
         android:name=".tv.ui.TvPlayerActivity"
@@ -126,11 +128,13 @@
     <activity
         android:name=".tv.ui.TvChannelsActivity"
         android:exported="false"
+        android:screenOrientation="portrait"
         android:label="选择频道" />
-    <!-- B站登录页（WebView，v1.9.7）：登录后自动抓 SESSDATA 存本机，用于解锁 720P -->
+    <!-- B站登录页（WebView，v1.9.7）：登录后自动抓 SESSDATA 存本机 -->
     <activity
         android:name=".tv.ui.BiliLoginActivity"
         android:exported="false"
+        android:screenOrientation="portrait"
         android:label="登录 B站"
         android:configChanges="orientation|screenSize|keyboardHidden" />
   </application>
